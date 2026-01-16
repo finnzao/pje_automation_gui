@@ -1,0 +1,9 @@
+# PJE Download Manager - Dependências
+# =====================================
+
+# Core
+requests>=2.28.0
+python-dotenv>=0.19.0
+
+# Interface gráfica
+streamlit>=1.20.0
