@@ -1,8 +1,12 @@
-"""
-PJE Download Manager - Interface Grafica Minimalista
-"""
-
 import streamlit as st
+
+st.set_page_config(
+    page_title="PJE Download Manager",
+    page_icon="⚖️",
+    layout="wide",
+    initial_sidebar_state="collapsed"
+)
+
 import time
 import os
 import subprocess
@@ -13,16 +17,9 @@ from pathlib import Path
 from datetime import datetime
 from typing import Optional
 
-# Desabilita buffer de saida para evitar travamentos
 os.environ['PYTHONUNBUFFERED'] = '1'
-sys.stdout.reconfigure(line_buffering=True) if hasattr(sys.stdout, 'reconfigure') else None
-
-st.set_page_config(
-    page_title="PJE Download Manager",
-    page_icon="",
-    layout="wide",
-    initial_sidebar_state="collapsed"
-)
+if hasattr(sys.stdout, 'reconfigure'):
+    sys.stdout.reconfigure(line_buffering=True)
 
 sys.path.insert(0, str(Path(__file__).parent))
 
@@ -30,7 +27,6 @@ from pje_lib import PJEClient
 from pje_lib.models import Perfil, Tarefa, Etiqueta
 from ui.credential_manager import CredentialManager, PreferencesManager
 
-# CSS minimalista
 st.markdown("""
 <style>
     #MainMenu {visibility: hidden;}
@@ -115,8 +111,6 @@ def do_logout():
     st.rerun()
 
 
-# ==================== PAGINAS ====================
-
 def page_login():
     st.title("PJE Download Manager")
     st.caption("Sistema de download de processos do PJE-TJBA")
@@ -176,36 +170,54 @@ def page_select_profile():
     pje = get_pje_client()
     
     if not st.session_state.perfis:
-        with st.spinner("Carregando..."):
+        with st.spinner("Carregando perfis..."):
             st.session_state.perfis = pje.listar_perfis()
     
-    if not st.session_state.perfis:
+    perfis = st.session_state.perfis
+    
+    if not perfis:
         st.warning("Nenhum perfil encontrado")
-        if st.button("Tentar novamente"):
-            st.session_state.perfis = []
-            st.rerun()
+        col1, col2 = st.columns(2)
+        with col1:
+            if st.button("Tentar novamente", use_container_width=True):
+                st.session_state.perfis = []
+                st.rerun()
+        with col2:
+            if st.button("Sair", use_container_width=True):
+                do_logout()
         return
     
-    for i, perfil in enumerate(st.session_state.perfis):
-        col1, col2 = st.columns([4, 1])
-        with col1:
-            st.write(f"**{perfil.nome}** - {perfil.orgao or '-'}")
-        with col2:
-            if st.button("Selecionar", key=f"p_{i}"):
-                with st.spinner("Selecionando..."):
-                    if pje.select_profile_by_index(perfil.index):
-                        st.session_state.perfil_selecionado = perfil
-                        st.session_state.page = 'main_menu'
-                        st.rerun()
+    st.info(f"{len(perfis)} perfil(is) disponivel(is)")
+    st.markdown("---")
     
-    st.divider()
-    if st.button("Sair"):
+    for perfil in perfis:
+        with st.container():
+            col1, col2 = st.columns([4, 1])
+            with col1:
+                nome_display = f"**{perfil.nome}**"
+                if perfil.orgao:
+                    nome_display += f" - {perfil.orgao}"
+                if perfil.cargo:
+                    nome_display += f" ({perfil.cargo})"
+                st.markdown(nome_display)
+            with col2:
+                if st.button("Selecionar", key=f"perfil_btn_{perfil.index}_{hash(perfil.nome)}"):
+                    with st.spinner(f"Selecionando {perfil.nome}..."):
+                        if pje.select_profile_by_index(perfil.index):
+                            st.session_state.perfil_selecionado = perfil
+                            st.session_state.page = 'main_menu'
+                            st.rerun()
+                        else:
+                            st.error(f"Erro ao selecionar perfil: {perfil.nome}")
+    
+    st.markdown("---")
+    if st.button("Sair", use_container_width=True):
         do_logout()
 
 
 def page_main_menu():
     perfil = st.session_state.perfil_selecionado
-    st.title("Menu")
+    st.title("Menu Principal")
     st.caption(f"{st.session_state.user_name} | {perfil.nome if perfil else '-'}")
     
     st.divider()
@@ -214,12 +226,14 @@ def page_main_menu():
     
     with col1:
         st.subheader("Por Tarefa")
+        st.caption("Baixar processos de uma tarefa")
         if st.button("Abrir", key="btn_task", use_container_width=True, type="primary"):
             st.session_state.page = 'download_by_task'
             st.rerun()
     
     with col2:
         st.subheader("Por Etiqueta")
+        st.caption("Baixar processos de uma etiqueta")
         if st.button("Abrir", key="btn_tag", use_container_width=True, type="primary"):
             st.session_state.page = 'download_by_tag'
             st.rerun()
@@ -246,7 +260,6 @@ def page_download_by_task():
     
     pje = get_pje_client()
     
-    # Sidebar com opcoes
     with st.sidebar:
         st.subheader("Opcoes")
         usar_favoritas = st.checkbox("Apenas favoritas")
@@ -257,15 +270,14 @@ def page_download_by_task():
             st.session_state.page = 'main_menu'
             st.rerun()
     
-    # Carregar tarefas
     if usar_favoritas:
         if not st.session_state.tarefas_favoritas:
-            with st.spinner("Carregando..."):
+            with st.spinner("Carregando tarefas favoritas..."):
                 st.session_state.tarefas_favoritas = pje.listar_tarefas_favoritas(force=True)
         tarefas = st.session_state.tarefas_favoritas
     else:
         if not st.session_state.tarefas:
-            with st.spinner("Carregando..."):
+            with st.spinner("Carregando tarefas..."):
                 st.session_state.tarefas = pje.listar_tarefas(force=True)
         tarefas = st.session_state.tarefas
     
@@ -277,26 +289,33 @@ def page_download_by_task():
             st.rerun()
         return
     
-    st.caption(f"{len(tarefas)} tarefas")
+    st.caption(f"{len(tarefas)} tarefa(s)")
     
-    busca = st.text_input("Buscar", placeholder="Filtrar...")
+    busca = st.text_input("Buscar", placeholder="Filtrar tarefas...")
     
     tarefas_filtradas = [t for t in tarefas if busca.lower() in t.nome.lower()] if busca else tarefas
     
+    if not tarefas_filtradas:
+        st.warning(f"Nenhuma tarefa encontrada para: '{busca}'")
+        return
+    
+    st.markdown("---")
+    
     for tarefa in tarefas_filtradas:
-        col1, col2, col3 = st.columns([5, 1, 1])
-        with col1:
-            st.write(tarefa.nome)
-        with col2:
-            st.caption(f"{tarefa.quantidade_pendente}")
-        with col3:
-            if st.button("Baixar", key=f"t_{tarefa.id}"):
-                st.session_state.selected_task = tarefa
-                st.session_state.task_limit = limite if limite > 0 else None
-                st.session_state.task_usar_favoritas = usar_favoritas
-                st.session_state.task_tamanho_lote = tamanho_lote
-                st.session_state.page = 'processing_task'
-                st.rerun()
+        with st.container():
+            col1, col2, col3 = st.columns([5, 1, 1])
+            with col1:
+                st.markdown(f"**{tarefa.nome}**")
+            with col2:
+                st.caption(f"{tarefa.quantidade_pendente}")
+            with col3:
+                if st.button("Baixar", key=f"tarefa_dl_{tarefa.id}_{hash(tarefa.nome)}"):
+                    st.session_state.selected_task = tarefa
+                    st.session_state.task_limit = limite if limite > 0 else None
+                    st.session_state.task_usar_favoritas = usar_favoritas
+                    st.session_state.task_tamanho_lote = tamanho_lote
+                    st.session_state.page = 'processing_task'
+                    st.rerun()
 
 
 def page_download_by_tag():
@@ -313,27 +332,35 @@ def page_download_by_tag():
             st.session_state.page = 'main_menu'
             st.rerun()
     
-    busca = st.text_input("Nome da etiqueta", placeholder="Buscar...")
+    busca = st.text_input("Nome da etiqueta", placeholder="Buscar etiqueta...")
     
     if busca:
-        with st.spinner("Buscando..."):
+        with st.spinner("Buscando etiquetas..."):
             etiquetas = pje.buscar_etiquetas(busca)
         
         if etiquetas:
-            st.caption(f"{len(etiquetas)} encontradas")
+            st.caption(f"{len(etiquetas)} etiqueta(s)")
+            st.markdown("---")
+            
             for etiqueta in etiquetas:
-                col1, col2 = st.columns([4, 1])
-                with col1:
-                    st.write(etiqueta.nome)
-                with col2:
-                    if st.button("Baixar", key=f"e_{etiqueta.id}"):
-                        st.session_state.selected_tag = etiqueta
-                        st.session_state.tag_limit = limite if limite > 0 else None
-                        st.session_state.tag_tamanho_lote = tamanho_lote
-                        st.session_state.page = 'processing_tag'
-                        st.rerun()
+                with st.container():
+                    col1, col2 = st.columns([4, 1])
+                    with col1:
+                        nome_display = f"**{etiqueta.nome}**"
+                        if etiqueta.nome_completo and etiqueta.nome_completo != etiqueta.nome:
+                            nome_display += f" ({etiqueta.nome_completo})"
+                        st.markdown(nome_display)
+                    with col2:
+                        if st.button("Baixar", key=f"etiqueta_dl_{etiqueta.id}_{hash(etiqueta.nome)}"):
+                            st.session_state.selected_tag = etiqueta
+                            st.session_state.tag_limit = limite if limite > 0 else None
+                            st.session_state.tag_tamanho_lote = tamanho_lote
+                            st.session_state.page = 'processing_tag'
+                            st.rerun()
         else:
-            st.info("Nenhuma etiqueta encontrada")
+            st.info(f"Nenhuma etiqueta encontrada para: '{busca}'")
+    else:
+        st.info("Digite o nome da etiqueta para buscar")
 
 
 def page_processing_task():
@@ -385,7 +412,7 @@ def page_processing_task():
             total = estado.get('processos', 0)
             proc_atual = estado.get('processo_atual', '')
             
-            status_text.text(get_status_text(status))
+            status_text.markdown(f"**Status:** {get_status_text(status)}")
             
             if total > 0:
                 progress_bar.progress(min(progresso / total, 1.0))
@@ -458,7 +485,7 @@ def page_processing_tag():
             total = estado.get('processos', 0)
             proc_atual = estado.get('processo_atual', '')
             
-            status_text.text(get_status_text(status))
+            status_text.markdown(f"**Status:** {get_status_text(status)}")
             
             if total > 0:
                 progress_bar.progress(min(progresso / total, 1.0))
@@ -497,24 +524,24 @@ def page_result():
     else:
         st.title("Resultado")
     
-    # Metricas
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("Total", relatorio.get('processos', 0))
     col2.metric("OK", relatorio.get('sucesso', 0))
     col3.metric("Falhas", relatorio.get('falha', 0))
     col4.metric("Arquivos", len(relatorio.get('arquivos', [])))
     
-    # Integridade
     integridade = relatorio.get('integridade', 'pendente')
     retries = relatorio.get('retries', {})
     
     if integridade == 'ok':
         st.success("Integridade: OK - Todos os arquivos confirmados")
     elif integridade == 'inconsistente':
-        st.warning(f"Integridade: Inconsistente - {len(retries.get('processos_falha_definitiva', []))} arquivos faltando")
+        falhas_count = len(retries.get('processos_falha_definitiva', []))
+        st.warning(f"Integridade: Inconsistente - {falhas_count} arquivo(s) faltando")
     
     if retries.get('tentativas', 0) > 0:
-        st.info(f"Retries: {retries['tentativas']} tentativa(s), {len(retries.get('processos_reprocessados', []))} reprocessados")
+        reprocessados = len(retries.get('processos_reprocessados', []))
+        st.info(f"Retries: {retries['tentativas']} tentativa(s), {reprocessados} reprocessado(s)")
     
     st.divider()
     
@@ -534,21 +561,19 @@ def page_result():
             use_container_width=True
         )
     
-    # Falhas definitivas
     falhas_def = retries.get('processos_falha_definitiva', [])
     if falhas_def:
-        with st.expander(f"Falhas definitivas ({len(falhas_def)})"):
+        with st.expander(f"Falhas definitivas ({len(falhas_def)})", expanded=False):
             for proc in falhas_def:
-                st.text(proc)
+                st.code(proc)
     
-    # Arquivos
     arquivos = relatorio.get('arquivos', [])
     if arquivos:
-        with st.expander(f"Arquivos ({len(arquivos)})"):
-            for arq in arquivos[:30]:
-                st.text(Path(arq).name)
-            if len(arquivos) > 30:
-                st.text(f"... +{len(arquivos) - 30} arquivos")
+        with st.expander(f"Arquivos baixados ({len(arquivos)})", expanded=False):
+            for arq in arquivos[:50]:
+                st.text(f"  {Path(arq).name}")
+            if len(arquivos) > 50:
+                st.caption(f"... +{len(arquivos) - 50} arquivo(s)")
     
     st.divider()
     
@@ -562,8 +587,6 @@ def page_result():
         if st.button("Sair", use_container_width=True):
             do_logout()
 
-
-# ==================== MAIN ====================
 
 def main():
     init_session_state()
