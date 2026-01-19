@@ -1,15 +1,3 @@
-#!/usr/bin/env python3
-"""
-PJE Download Manager - Script de Inicialização
-===============================================
-
-Este script:
-1. Verifica se todas as dependências estão instaladas
-2. Instala dependências faltantes automaticamente
-3. Inicia o servidor Streamlit
-4. Abre o navegador automaticamente na URL correta
-"""
-
 import sys
 import subprocess
 import time
@@ -28,11 +16,8 @@ HOST = "127.0.0.1"
 
 def print_header():
     """Imprime cabeçalho do programa."""
-    print()
-    print("=" * 50)
     print(f"  {APP_NAME}")
-    print("=" * 50)
-    print()
+
 
 
 def check_python_version():

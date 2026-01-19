@@ -57,7 +57,7 @@ class PJEClient:
         
         self.logger.info(f"PJEClient inicializado. Downloads: {self.download_dir}")
     
-    # ==================== PROPRIEDADES ====================
+    # PROPRIEDADES
     
     @property
     def usuario(self) -> Optional[Usuario]:
@@ -75,7 +75,7 @@ class PJEClient:
     def tarefas_favoritas(self) -> List[Tarefa]:
         return self._tasks.tarefas_favoritas_cache
     
-    # ==================== CALLBACKS E CONTROLE ====================
+    # CALLBACKS E CONTROLE
     
     def set_progress_callback(self, callback: Callable[[int, int, str, str], None]):
         self._progress_callback = callback
@@ -93,7 +93,7 @@ class PJEClient:
     def _reset_cancelamento(self):
         self._cancelar = False
     
-    # ==================== AUTENTICAÇÃO ====================
+    # AUTENTICAÇÃO
     
     def login(self, username: str = None, password: str = None, force: bool = False) -> bool:
         return self._auth.login(username, password, force)
@@ -104,7 +104,7 @@ class PJEClient:
     def ensure_logged_in(self) -> bool:
         return self._auth.ensure_logged_in()
     
-    # ==================== PERFIL ====================
+    # PERFIL
     
     def listar_perfis(self) -> List[Perfil]:
         return self._auth.listar_perfis()
@@ -121,7 +121,7 @@ class PJEClient:
             self._tasks.limpar_cache()
         return result
     
-    # ==================== TAREFAS ====================
+    # TAREFAS
     
     def listar_tarefas(self, force: bool = False) -> List[Tarefa]:
         if not self.ensure_logged_in():
@@ -141,7 +141,7 @@ class PJEClient:
             return []
         return self._tasks.listar_todos_processos_tarefa(nome, favoritas)
     
-    # ==================== ETIQUETAS ====================
+    # ETIQUETAS
     
     def buscar_etiquetas(self, busca: str = "") -> List[Etiqueta]:
         if not self.ensure_logged_in():
@@ -158,7 +158,7 @@ class PJEClient:
             return []
         return self._tags.listar_processos_etiqueta(id_etiqueta, limit)
     
-    # ==================== DOWNLOAD ====================
+    # DOWNLOAD
     
     def solicitar_download(self, id_processo: int, numero_processo: str, 
                           tipo: str = "Selecione", diretorio: Path = None) -> bool:
@@ -173,7 +173,7 @@ class PJEClient:
     def baixar_arquivo(self, download: DownloadDisponivel, diretorio: Path = None) -> Optional[Path]:
         return self._downloads.baixar_arquivo(download, diretorio)
     
-    # ==================== VERIFICAÇÃO DE INTEGRIDADE ====================
+    # VERIFICAÇÃO DE INTEGRIDADE
     
     def _verificar_arquivo_valido(self, filepath: Path) -> bool:
         """Verifica se um arquivo existe e é válido."""
@@ -244,7 +244,7 @@ class PJEClient:
             "integridade": "ok" if not processos_faltantes else "inconsistente"
         }
     
-    # ==================== FLUXOS COM RETRY ====================
+    # FLUXOS COM RETRY
     
     def processar_tarefa_generator(
         self,
@@ -767,7 +767,7 @@ class PJEClient:
         
         return arquivos_baixados
     
-    # ==================== MÉTODOS LEGADOS ====================
+    # MÉTODOS LEGADOS
     
     def processar_tarefa(
         self,
