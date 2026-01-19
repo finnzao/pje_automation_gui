@@ -26,39 +26,33 @@ Exemplos:
         """
     )
     
-    # Argumentos principais
     parser.add_argument("-e", "--etiqueta", type=str, help="Nome da etiqueta a processar")
     parser.add_argument("-p", "--perfil", type=str, help="Nome do perfil a selecionar")
     
-    # Opções
     parser.add_argument("--limite", type=int, help="Limitar quantidade de processos")
     parser.add_argument("--tipo-documento", type=str, default="Selecione", 
                         help="Tipo de documento (default: Selecione)")
     parser.add_argument("--tempo-espera", type=int, default=300, 
-                        help="Tempo máximo de espera em segundos (default: 300)")
+                        help="Tempo maximo de espera em segundos (default: 300)")
     parser.add_argument("--sem-download", action="store_true", 
-                        help="Apenas solicitar, não aguardar download")
+                        help="Apenas solicitar, nao aguardar download")
     parser.add_argument("--download-dir", type=str, default="./downloads",
-                        help="Diretório para downloads (default: ./downloads)")
+                        help="Diretorio para downloads (default: ./downloads)")
     
-    # Comandos de listagem
-    parser.add_argument("--listar-etiquetas", action="store_true", help="Listar etiquetas disponíveis")
+    parser.add_argument("--listar-etiquetas", action="store_true", help="Listar etiquetas disponiveis")
     parser.add_argument("--buscar-etiqueta", type=str, help="Buscar etiquetas por nome")
-    parser.add_argument("--listar-perfis", action="store_true", help="Listar perfis disponíveis")
+    parser.add_argument("--listar-perfis", action="store_true", help="Listar perfis disponiveis")
     
-    # Debug
     parser.add_argument("--debug", action="store_true", help="Modo debug")
     
     args = parser.parse_args()
     
-    # Inicializa cliente
     pje = PJEClient(
         download_dir=args.download_dir,
         debug=args.debug
     )
     
     try:
-        # Login
         if not pje.login():
             print("Falha no login! Verifique as credenciais no arquivo .env")
             print("O arquivo .env deve conter:")
@@ -66,34 +60,29 @@ Exemplos:
             print("  PJE_PASSWORD=sua_senha")
             return
         
-        # Selecionar perfil (se especificado)
         if args.perfil:
             if not pje.select_profile(args.perfil):
                 print(f"Falha ao selecionar perfil: {args.perfil}")
                 return
         
-        # Listar perfis
         if args.listar_perfis:
-            print("\n=== PERFIS DISPONÍVEIS ===")
+            print("\n=== PERFIS DISPONIVEIS ===")
             for p in pje.listar_perfis():
                 print(f"  [{p.index}] {p.nome_completo}")
             return
         
-        # Listar etiquetas
         if args.listar_etiquetas:
             print("\n=== ETIQUETAS ===")
             for e in pje.buscar_etiquetas():
                 print(f"  - {e.nome} (ID: {e.id})")
             return
         
-        # Buscar etiquetas
         if args.buscar_etiqueta:
             print(f"\n=== ETIQUETAS com '{args.buscar_etiqueta}' ===")
             for e in pje.buscar_etiquetas(args.buscar_etiqueta):
                 print(f"  - {e.nome} (ID: {e.id})")
             return
         
-        # Processar etiqueta
         if args.etiqueta:
             relatorio = pje.processar_etiqueta(
                 nome_etiqueta=args.etiqueta,
@@ -103,13 +92,12 @@ Exemplos:
                 tempo_espera=args.tempo_espera
             )
             
-            print(f"\n✓ Processamento concluído!")
+            print(f"\nProcessamento concluido!")
             print(f"  Processos: {relatorio['processos']}")
             print(f"  Sucesso: {relatorio['sucesso']}")
             print(f"  Arquivos: {len(relatorio['arquivos'])}")
-            print(f"  Diretório: {relatorio['diretorio']}")
+            print(f"  Diretorio: {relatorio['diretorio']}")
         else:
-            # Se não passou argumentos, mostra ajuda
             parser.print_help()
         
     finally:

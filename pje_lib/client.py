@@ -19,9 +19,7 @@ from .utils import delay, normalizar_nome_pasta, save_json, timestamp_str, get_l
 
 
 class PJEClient:
-    """
-    Cliente principal para automação do PJE.
-    """
+    """Cliente principal para automacao do PJE."""
     
     def __init__(
         self,
@@ -51,13 +49,10 @@ class PJEClient:
         self._progress_callback: Optional[Callable[[int, int, str, str], None]] = None
         self._cancelar = False
         
-        # Configurações de retry
         self.max_retries = 2
         self.retry_delay = 5
         
         self.logger.info(f"PJEClient inicializado. Downloads: {self.download_dir}")
-    
-    # PROPRIEDADES
     
     @property
     def usuario(self) -> Optional[Usuario]:
@@ -75,8 +70,6 @@ class PJEClient:
     def tarefas_favoritas(self) -> List[Tarefa]:
         return self._tasks.tarefas_favoritas_cache
     
-    # CALLBACKS E CONTROLE
-    
     def set_progress_callback(self, callback: Callable[[int, int, str, str], None]):
         self._progress_callback = callback
     
@@ -93,8 +86,6 @@ class PJEClient:
     def _reset_cancelamento(self):
         self._cancelar = False
     
-    # AUTENTICAÇÃO
-    
     def login(self, username: str = None, password: str = None, force: bool = False) -> bool:
         return self._auth.login(username, password, force)
     
@@ -103,8 +94,6 @@ class PJEClient:
     
     def ensure_logged_in(self) -> bool:
         return self._auth.ensure_logged_in()
-    
-    # PERFIL
     
     def listar_perfis(self) -> List[Perfil]:
         return self._auth.listar_perfis()
@@ -119,9 +108,8 @@ class PJEClient:
         result = self._auth.select_profile_by_index(index)
         if result:
             self._tasks.limpar_cache()
+            self.logger.info(f"Cache de tarefas limpo apos selecao de perfil")
         return result
-    
-    # TAREFAS
     
     def listar_tarefas(self, force: bool = False) -> List[Tarefa]:
         if not self.ensure_logged_in():
@@ -141,8 +129,6 @@ class PJEClient:
             return []
         return self._tasks.listar_todos_processos_tarefa(nome, favoritas)
     
-    # ETIQUETAS
-    
     def buscar_etiquetas(self, busca: str = "") -> List[Etiqueta]:
         if not self.ensure_logged_in():
             return []
@@ -158,8 +144,6 @@ class PJEClient:
             return []
         return self._tags.listar_processos_etiqueta(id_etiqueta, limit)
     
-    # DOWNLOAD
-    
     def solicitar_download(self, id_processo: int, numero_processo: str, 
                           tipo: str = "Selecione", diretorio: Path = None) -> bool:
         sucesso, _ = self._downloads.solicitar_download(
@@ -173,16 +157,12 @@ class PJEClient:
     def baixar_arquivo(self, download: DownloadDisponivel, diretorio: Path = None) -> Optional[Path]:
         return self._downloads.baixar_arquivo(download, diretorio)
     
-    # VERIFICAÇÃO DE INTEGRIDADE
-    
     def _verificar_arquivo_valido(self, filepath: Path) -> bool:
-        """Verifica se um arquivo existe e é válido."""
         try:
             if not filepath.exists():
                 return False
             if filepath.stat().st_size == 0:
                 return False
-            # Tenta abrir para verificar se não está em uso
             with open(filepath, 'rb') as f:
                 f.read(1)
             return True
@@ -190,7 +170,6 @@ class PJEClient:
             return False
     
     def _listar_arquivos_diretorio(self, diretorio: Path) -> Set[str]:
-        """Lista arquivos válidos no diretório."""
         arquivos = set()
         if not diretorio.exists():
             return arquivos
@@ -202,29 +181,15 @@ class PJEClient:
         return arquivos
     
     def _extrair_numero_processo_arquivo(self, nome_arquivo: str) -> Optional[str]:
-        """Extrai número do processo do nome do arquivo."""
-        # Formato: NUMERO-PROCESSO-timestamp-id-processo.pdf
-        # Ex: 8001907-50.2024.8.05.0216-1768570791589-14552753-processo.pdf
         import re
         match = re.match(r'^(\d{7}-\d{2}\.\d{4}\.\d\.\d{2}\.\d{4})', nome_arquivo)
         if match:
             return match.group(1)
         return None
     
-    def _verificar_integridade(
-        self, 
-        processos_esperados: List[str], 
-        diretorio: Path
-    ) -> Dict[str, Any]:
-        """
-        Verifica integridade entre processos esperados e arquivos no disco.
-        
-        Returns:
-            Dict com status de integridade
-        """
+    def _verificar_integridade(self, processos_esperados: List[str], diretorio: Path) -> Dict[str, Any]:
         arquivos_disco = self._listar_arquivos_diretorio(diretorio)
         
-        # Mapear arquivos para números de processo
         processos_baixados = set()
         for arquivo in arquivos_disco:
             num_proc = self._extrair_numero_processo_arquivo(arquivo)
@@ -232,8 +197,6 @@ class PJEClient:
                 processos_baixados.add(num_proc)
         
         processos_esperados_set = set(processos_esperados)
-        
-        # Calcular diferenças
         processos_faltantes = processos_esperados_set - processos_baixados
         
         return {
@@ -244,7 +207,35 @@ class PJEClient:
             "integridade": "ok" if not processos_faltantes else "inconsistente"
         }
     
-    # FLUXOS COM RETRY
+    def _baixar_pendentes_verificado(self, processos: List[str], diretorio: Path, tempo_espera: int = 60) -> List[str]:
+        if not processos:
+            return []
+        
+        arquivos_baixados = []
+        self.logger.info(f"Verificando {len(processos)} downloads pendentes")
+        
+        time.sleep(5)
+        
+        inicio = time.time()
+        processos_restantes = set(processos)
+        
+        while processos_restantes and (time.time() - inicio) < tempo_espera:
+            downloads = self._downloads.listar_downloads_disponiveis()
+            
+            for download in downloads:
+                numeros = download.get_numeros_processos()
+                for num in numeros:
+                    if num in processos_restantes:
+                        arquivo = self._downloads.baixar_arquivo(download, diretorio)
+                        if arquivo and self._verificar_arquivo_valido(arquivo):
+                            arquivos_baixados.append(str(arquivo))
+                            processos_restantes.discard(num)
+            
+            if processos_restantes:
+                self.logger.info(f"Restantes: {len(processos_restantes)}")
+                time.sleep(10)
+        
+        return arquivos_baixados
     
     def processar_tarefa_generator(
         self,
@@ -257,9 +248,6 @@ class PJEClient:
         usar_favoritas: bool = False,
         tamanho_lote: int = 10
     ) -> Generator[Dict[str, Any], None, Dict[str, Any]]:
-        """
-        Processa todos os processos de uma tarefa com retry automático.
-        """
         self._reset_cancelamento()
         self._downloads.limpar_diagnosticos()
         
@@ -281,25 +269,19 @@ class PJEClient:
             "processo_atual": "",
             "progresso": 0,
             "integridade": "pendente",
-            "retries": {
-                "tentativas": 0,
-                "processos_reprocessados": [],
-                "processos_falha_definitiva": []
-            }
+            "retries": {"tentativas": 0, "processos_reprocessados": [], "processos_falha_definitiva": []}
         }
         
         yield relatorio
         
         self.logger.section(f"PROCESSANDO TAREFA: {nome_tarefa}")
         
-        # Selecionar perfil
         if perfil and not self.select_profile(perfil):
             relatorio["erros"].append("Falha ao selecionar perfil")
             relatorio["status"] = "erro"
             yield relatorio
             return relatorio
         
-        # Buscar tarefa
         relatorio["status"] = "buscando_tarefa"
         yield relatorio
         
@@ -310,7 +292,6 @@ class PJEClient:
             yield relatorio
             return relatorio
         
-        # Listar processos
         relatorio["status"] = "listando_processos"
         yield relatorio
         
@@ -325,11 +306,8 @@ class PJEClient:
             yield relatorio
             return relatorio
         
-        # Mapear processos para retry
         mapa_processos = {p.numero_processo: p for p in processos}
         processos_esperados = list(mapa_processos.keys())
-        
-        # Processar em lotes
         processos_pendentes = []
         total = len(processos)
         
@@ -345,12 +323,10 @@ class PJEClient:
             relatorio["processo_atual"] = proc.numero_processo
             relatorio["progresso"] = i
             self.logger.info(f"[{i}/{total}] {proc.numero_processo}")
-            
             yield relatorio
             
             sucesso, detalhes = self._downloads.solicitar_download(
-                proc.id_processo, proc.numero_processo, tipo_documento,
-                diretorio_download=diretorio
+                proc.id_processo, proc.numero_processo, tipo_documento, diretorio_download=diretorio
             )
             
             if sucesso:
@@ -367,50 +343,38 @@ class PJEClient:
                 relatorio["falha"] += 1
             
             yield relatorio
-            
-            # Delay não bloqueante
             time.sleep(2)
             
-            # A cada lote, baixar pendentes
             if len(processos_pendentes) >= tamanho_lote:
                 relatorio["status"] = "baixando_lote"
                 yield relatorio
                 
-                arquivos = self._baixar_pendentes_verificado(
-                    processos_pendentes, diretorio, tempo_espera=60
-                )
+                arquivos = self._baixar_pendentes_verificado(processos_pendentes, diretorio, tempo_espera=60)
                 for arq in arquivos:
                     if arq not in relatorio["arquivos"]:
                         relatorio["arquivos"].append(arq)
                         relatorio["sucesso"] += 1
                 processos_pendentes.clear()
-                
                 relatorio["status"] = "processando"
                 yield relatorio
         
-        # Baixar últimos pendentes
         if aguardar_download and processos_pendentes:
             relatorio["status"] = "aguardando_downloads"
             relatorio["processo_atual"] = f"Aguardando {len(processos_pendentes)} downloads"
             yield relatorio
             
-            arquivos = self._baixar_pendentes_verificado(
-                processos_pendentes, diretorio, tempo_espera=tempo_espera
-            )
+            arquivos = self._baixar_pendentes_verificado(processos_pendentes, diretorio, tempo_espera=tempo_espera)
             for arq in arquivos:
                 if arq not in relatorio["arquivos"]:
                     relatorio["arquivos"].append(arq)
                     relatorio["sucesso"] += 1
         
-        # VERIFICAÇÃO DE INTEGRIDADE
         relatorio["status"] = "verificando_integridade"
         relatorio["processo_atual"] = "Verificando arquivos"
         yield relatorio
         
         integridade = self._verificar_integridade(processos_esperados, diretorio)
         relatorio["integridade"] = integridade["integridade"]
-        
-        # RETRY AUTOMÁTICO
         processos_faltantes = integridade["processos_faltantes"]
         tentativa = 0
         
@@ -419,60 +383,44 @@ class PJEClient:
             relatorio["retries"]["tentativas"] = tentativa
             relatorio["status"] = f"retry_{tentativa}"
             relatorio["processo_atual"] = f"Retry {tentativa}/{self.max_retries} - {len(processos_faltantes)} processos"
-            
             self.logger.info(f"Retry {tentativa}: {len(processos_faltantes)} processos faltantes")
             yield relatorio
             
-            # Aguardar antes do retry
             time.sleep(self.retry_delay)
             
             for num_proc in processos_faltantes[:]:
                 if self._cancelar:
                     break
-                
                 if num_proc not in mapa_processos:
                     continue
-                
                 proc = mapa_processos[num_proc]
                 relatorio["processo_atual"] = f"Retry: {num_proc}"
                 yield relatorio
                 
-                sucesso, detalhes = self._downloads.solicitar_download(
-                    proc.id_processo, proc.numero_processo, tipo_documento,
-                    diretorio_download=diretorio
+                sucesso, _ = self._downloads.solicitar_download(
+                    proc.id_processo, proc.numero_processo, tipo_documento, diretorio_download=diretorio
                 )
-                
                 if sucesso:
                     relatorio["retries"]["processos_reprocessados"].append(num_proc)
-                
                 time.sleep(3)
             
-            # Aguardar downloads do retry
             time.sleep(15)
-            
-            arquivos_retry = self._baixar_pendentes_verificado(
-                processos_faltantes, diretorio, tempo_espera=60
-            )
+            arquivos_retry = self._baixar_pendentes_verificado(processos_faltantes, diretorio, tempo_espera=60)
             for arq in arquivos_retry:
                 if arq not in relatorio["arquivos"]:
                     relatorio["arquivos"].append(arq)
             
-            # Reverificar integridade
             integridade = self._verificar_integridade(processos_esperados, diretorio)
             processos_faltantes = integridade["processos_faltantes"]
             relatorio["integridade"] = integridade["integridade"]
         
-        # Marcar falhas definitivas
         if processos_faltantes:
             relatorio["retries"]["processos_falha_definitiva"] = processos_faltantes
         
-        # Recalcular sucesso com base em arquivos reais
         arquivos_validos = [a for a in relatorio["arquivos"] if self._verificar_arquivo_valido(Path(a))]
         relatorio["arquivos"] = arquivos_validos
         relatorio["sucesso"] = len(arquivos_validos)
         relatorio["falha"] = relatorio["processos"] - relatorio["sucesso"]
-        
-        # Finalizar
         relatorio["data_fim"] = datetime.now().isoformat()
         
         if relatorio["integridade"] == "ok":
@@ -483,7 +431,6 @@ class PJEClient:
             relatorio["status"] = "concluido"
         
         relatorio["processo_atual"] = ""
-        
         save_json(relatorio, diretorio / f"relatorio_{timestamp_str()}.json")
         
         self.logger.section("RESUMO")
@@ -505,9 +452,6 @@ class PJEClient:
         tempo_espera: int = 300,
         tamanho_lote: int = 10
     ) -> Generator[Dict[str, Any], None, Dict[str, Any]]:
-        """
-        Processa todos os processos de uma etiqueta com retry automático.
-        """
         self._reset_cancelamento()
         self._downloads.limpar_diagnosticos()
         
@@ -529,11 +473,7 @@ class PJEClient:
             "processo_atual": "",
             "progresso": 0,
             "integridade": "pendente",
-            "retries": {
-                "tentativas": 0,
-                "processos_reprocessados": [],
-                "processos_falha_definitiva": []
-            }
+            "retries": {"tentativas": 0, "processos_reprocessados": [], "processos_falha_definitiva": []}
         }
         
         yield relatorio
@@ -572,7 +512,6 @@ class PJEClient:
         
         mapa_processos = {p.numero_processo: p for p in processos}
         processos_esperados = list(mapa_processos.keys())
-        
         processos_pendentes = []
         total = len(processos)
         
@@ -588,12 +527,10 @@ class PJEClient:
             relatorio["processo_atual"] = proc.numero_processo
             relatorio["progresso"] = i
             self.logger.info(f"[{i}/{total}] {proc.numero_processo}")
-            
             yield relatorio
             
             sucesso, detalhes = self._downloads.solicitar_download(
-                proc.id_processo, proc.numero_processo, tipo_documento,
-                diretorio_download=diretorio
+                proc.id_processo, proc.numero_processo, tipo_documento, diretorio_download=diretorio
             )
             
             if sucesso:
@@ -615,16 +552,12 @@ class PJEClient:
             if len(processos_pendentes) >= tamanho_lote:
                 relatorio["status"] = "baixando_lote"
                 yield relatorio
-                
-                arquivos = self._baixar_pendentes_verificado(
-                    processos_pendentes, diretorio, tempo_espera=60
-                )
+                arquivos = self._baixar_pendentes_verificado(processos_pendentes, diretorio, tempo_espera=60)
                 for arq in arquivos:
                     if arq not in relatorio["arquivos"]:
                         relatorio["arquivos"].append(arq)
                         relatorio["sucesso"] += 1
                 processos_pendentes.clear()
-                
                 relatorio["status"] = "processando"
                 yield relatorio
         
@@ -632,24 +565,18 @@ class PJEClient:
             relatorio["status"] = "aguardando_downloads"
             relatorio["processo_atual"] = f"Aguardando {len(processos_pendentes)} downloads"
             yield relatorio
-            
-            arquivos = self._baixar_pendentes_verificado(
-                processos_pendentes, diretorio, tempo_espera=tempo_espera
-            )
+            arquivos = self._baixar_pendentes_verificado(processos_pendentes, diretorio, tempo_espera=tempo_espera)
             for arq in arquivos:
                 if arq not in relatorio["arquivos"]:
                     relatorio["arquivos"].append(arq)
                     relatorio["sucesso"] += 1
         
-        # Verificação de integridade
         relatorio["status"] = "verificando_integridade"
         relatorio["processo_atual"] = "Verificando arquivos"
         yield relatorio
         
         integridade = self._verificar_integridade(processos_esperados, diretorio)
         relatorio["integridade"] = integridade["integridade"]
-        
-        # Retry automático
         processos_faltantes = integridade["processos_faltantes"]
         tentativa = 0
         
@@ -658,7 +585,6 @@ class PJEClient:
             relatorio["retries"]["tentativas"] = tentativa
             relatorio["status"] = f"retry_{tentativa}"
             relatorio["processo_atual"] = f"Retry {tentativa}/{self.max_retries}"
-            
             self.logger.info(f"Retry {tentativa}: {len(processos_faltantes)} faltantes")
             yield relatorio
             
@@ -667,29 +593,21 @@ class PJEClient:
             for num_proc in processos_faltantes[:]:
                 if self._cancelar:
                     break
-                
                 if num_proc not in mapa_processos:
                     continue
-                
                 proc = mapa_processos[num_proc]
                 relatorio["processo_atual"] = f"Retry: {num_proc}"
                 yield relatorio
                 
                 sucesso, _ = self._downloads.solicitar_download(
-                    proc.id_processo, proc.numero_processo, tipo_documento,
-                    diretorio_download=diretorio
+                    proc.id_processo, proc.numero_processo, tipo_documento, diretorio_download=diretorio
                 )
-                
                 if sucesso:
                     relatorio["retries"]["processos_reprocessados"].append(num_proc)
-                
                 time.sleep(3)
             
             time.sleep(15)
-            
-            arquivos_retry = self._baixar_pendentes_verificado(
-                processos_faltantes, diretorio, tempo_espera=60
-            )
+            arquivos_retry = self._baixar_pendentes_verificado(processos_faltantes, diretorio, tempo_espera=60)
             for arq in arquivos_retry:
                 if arq not in relatorio["arquivos"]:
                     relatorio["arquivos"].append(arq)
@@ -701,12 +619,10 @@ class PJEClient:
         if processos_faltantes:
             relatorio["retries"]["processos_falha_definitiva"] = processos_faltantes
         
-        # Recalcular com base em arquivos reais
         arquivos_validos = [a for a in relatorio["arquivos"] if self._verificar_arquivo_valido(Path(a))]
         relatorio["arquivos"] = arquivos_validos
         relatorio["sucesso"] = len(arquivos_validos)
         relatorio["falha"] = relatorio["processos"] - relatorio["sucesso"]
-        
         relatorio["data_fim"] = datetime.now().isoformat()
         
         if relatorio["integridade"] == "ok":
@@ -717,7 +633,6 @@ class PJEClient:
             relatorio["status"] = "concluido"
         
         relatorio["processo_atual"] = ""
-        
         save_json(relatorio, diretorio / f"relatorio_{timestamp_str()}.json")
         
         self.logger.section("RESUMO")
@@ -728,46 +643,6 @@ class PJEClient:
         
         yield relatorio
         return relatorio
-    
-    def _baixar_pendentes_verificado(
-        self, 
-        processos: List[str], 
-        diretorio: Path, 
-        tempo_espera: int = 60
-    ) -> List[str]:
-        """
-        Baixa processos pendentes e verifica integridade dos arquivos.
-        """
-        if not processos:
-            return []
-        
-        arquivos_baixados = []
-        self.logger.info(f"Verificando {len(processos)} downloads pendentes")
-        
-        time.sleep(5)
-        
-        inicio = time.time()
-        processos_restantes = set(processos)
-        
-        while processos_restantes and (time.time() - inicio) < tempo_espera:
-            downloads = self._downloads.listar_downloads_disponiveis()
-            
-            for download in downloads:
-                numeros = download.get_numeros_processos()
-                for num in numeros:
-                    if num in processos_restantes:
-                        arquivo = self._downloads.baixar_arquivo(download, diretorio)
-                        if arquivo and self._verificar_arquivo_valido(arquivo):
-                            arquivos_baixados.append(str(arquivo))
-                            processos_restantes.discard(num)
-            
-            if processos_restantes:
-                self.logger.info(f"Restantes: {len(processos_restantes)}")
-                time.sleep(10)
-        
-        return arquivos_baixados
-    
-    # MÉTODOS LEGADOS
     
     def processar_tarefa(
         self,

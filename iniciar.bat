@@ -1,6 +1,6 @@
 @echo off
 REM ========================================
-REM PJE Download Manager - Inicialização
+REM PJE Download Manager - Inicializacao
 REM ========================================
 
 echo.
@@ -9,7 +9,7 @@ echo   PJE Download Manager
 echo  ========================================
 echo.
 
-REM Verifica se Python está instalado
+REM Verifica se Python esta instalado
 python --version >nul 2>&1
 if errorlevel 1 (
     echo [ERRO] Python nao encontrado!
@@ -24,7 +24,7 @@ if errorlevel 1 (
     exit /b 1
 )
 
-REM Executa o script de inicialização Python
+REM Executa o script de inicializacao Python
 python iniciar.py
 
 pause

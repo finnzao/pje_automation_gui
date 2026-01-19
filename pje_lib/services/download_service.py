@@ -1,5 +1,5 @@
 """
-Serviço de download de processos.
+Servico de download de processos.
 """
 
 import re
@@ -15,7 +15,7 @@ from ..utils import delay, extrair_viewstate, current_month_year, get_logger
 
 
 class DownloadService:
-    """Serviço para download de processos."""
+    """Servico para download de processos."""
     
     def __init__(self, http_client: PJEHttpClient, download_dir: Optional[Path] = None):
         self.client = http_client
@@ -40,7 +40,7 @@ class DownloadService:
         return None
     
     def abrir_processo(self, id_processo: int, ca: str = None) -> Optional[str]:
-        """Abre página de autos digitais."""
+        """Abre pagina de autos digitais."""
         if not ca:
             ca = self.gerar_chave_acesso(id_processo)
             if not ca:
@@ -57,7 +57,7 @@ class DownloadService:
         return None
     
     def _identificar_botao_download(self, html: str) -> Optional[str]:
-        """Identifica ID do botão de download dinamicamente."""
+        """Identifica ID do botao de download dinamicamente."""
         patterns = [
             re.compile(r'<input[^>]*id="(navbar:j_id\d+)"[^>]*onclick="iniciarTemporizadorDownload\(\)[^"]*"[^>]*value="Download"[^>]*>', re.IGNORECASE | re.DOTALL),
             re.compile(r'<input[^>]*value="Download"[^>]*id="(navbar:j_id\d+)"[^>]*onclick="iniciarTemporizadorDownload\(\)[^"]*"[^>]*>', re.IGNORECASE | re.DOTALL),
@@ -69,7 +69,6 @@ class DownloadService:
             if matches:
                 return matches[0]
         
-        # Fallback
         for id_botao in ['navbar:j_id280', 'navbar:j_id278', 'navbar:j_id271', 'navbar:j_id270', 'navbar:j_id267']:
             if id_botao in html:
                 return id_botao
@@ -108,31 +107,26 @@ class DownloadService:
         """Solicita download de processo."""
         detalhes: Dict[str, Any] = {"id_processo": id_processo, "numero_processo": numero_processo}
         
-        # Chave de acesso
         ca = self.gerar_chave_acesso(id_processo)
         if not ca:
             return False, detalhes
         
-        # Abrir processo
         if not html_processo:
             delay()
             html_processo = self.abrir_processo(id_processo, ca)
             if not html_processo:
                 return False, detalhes
         
-        # ViewState
         viewstate = extrair_viewstate(html_processo)
         if not viewstate:
             return False, detalhes
         
-        # Botão
         botao_id = self._identificar_botao_download(html_processo)
         if not botao_id:
             return False, detalhes
         
         delay()
         
-        # Formulário
         form_data = {
             "AJAXREQUEST": "_viewRoot",
             "navbar:cbTipoDocumento": TIPO_DOCUMENTO_VALUES.get(tipo_documento, "0"),
@@ -161,8 +155,7 @@ class DownloadService:
             
             texto = resp.text
             
-            # Download direto (poucas peças)
-            if "está sendo gerado" in texto.lower() or "aguarde" in texto.lower():
+            if "esta sendo gerado" in texto.lower() or "aguarde" in texto.lower():
                 url_direta = self._extrair_url_download_direto(texto)
                 if url_direta and diretorio_download:
                     arquivo = self._baixar_arquivo_direto(url_direta, numero_processo, diretorio_download)
@@ -172,13 +165,11 @@ class DownloadService:
                         self.downloads_solicitados.add(numero_processo)
                         return True, detalhes
             
-            # Área de download (muitas peças)
-            if "será disponibilizado" in texto.lower() or "área de download" in texto.lower():
+            if "sera disponibilizado" in texto.lower() or "area de download" in texto.lower():
                 detalhes["tipo_download"] = "area_download"
                 self.downloads_solicitados.add(numero_processo)
                 return True, detalhes
             
-            # Outros padrões de sucesso
             if any(p in texto.lower() for p in ["download", "documento solicitado"]):
                 detalhes["tipo_download"] = "area_download"
                 self.downloads_solicitados.add(numero_processo)
@@ -190,10 +181,8 @@ class DownloadService:
             self.logger.error(f"Erro ao solicitar: {e}")
             return False, detalhes
     
-    # ÁREA DE DOWNLOADS 
-    
     def listar_downloads_disponiveis(self) -> List[DownloadDisponivel]:
-        """Lista downloads na área de downloads."""
+        """Lista downloads na area de downloads."""
         if not self.client.usuario:
             return []
         try:
@@ -208,7 +197,7 @@ class DownloadService:
         return []
     
     def obter_url_download(self, hash_download: str) -> Optional[str]:
-        """Obtém URL do S3."""
+        """Obtem URL do S3."""
         try:
             resp = self.client.api_get("pjedocs-api/v2/repositorio/gerar-url-download", params={"hashDownload": hash_download})
             if resp.status_code == 200:
@@ -218,7 +207,7 @@ class DownloadService:
         return None
     
     def baixar_arquivo(self, download: DownloadDisponivel, diretorio: Path = None) -> Optional[Path]:
-        """Baixa arquivo da área de downloads."""
+        """Baixa arquivo da area de downloads."""
         diretorio = diretorio or self.download_dir
         diretorio.mkdir(parents=True, exist_ok=True)
         
@@ -240,7 +229,7 @@ class DownloadService:
         return None
     
     def aguardar_downloads(self, processos: List[str], tempo_maximo: int = 300, intervalo: int = 15) -> List[DownloadDisponivel]:
-        """Aguarda downloads ficarem disponíveis."""
+        """Aguarda downloads ficarem disponiveis."""
         self.logger.info(f"Aguardando {len(processos)} downloads...")
         time.sleep(15)
         

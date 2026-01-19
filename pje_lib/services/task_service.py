@@ -1,5 +1,5 @@
 """
-Serviço de gerenciamento de tarefas.
+Servico de gerenciamento de tarefas.
 """
 
 import unicodedata
@@ -12,14 +12,14 @@ from ..utils import delay, get_logger
 
 
 def normalizar_texto(texto: str) -> str:
-    """Remove acentos e converte para minúsculo."""
+    """Remove acentos e converte para minusculo."""
     texto_normalizado = unicodedata.normalize('NFKD', texto)
     texto_sem_acento = ''.join(c for c in texto_normalizado if not unicodedata.combining(c))
     return texto_sem_acento.lower().strip()
 
 
 class TaskService:
-    """Serviço para tarefas e processos por tarefa."""
+    """Servico para tarefas e processos por tarefa."""
     
     def __init__(self, http_client: PJEHttpClient):
         self.client = http_client
@@ -38,18 +38,27 @@ class TaskService:
             return self.tarefas_cache
         
         try:
+            self.logger.debug("Requisitando tarefas...")
             resp = self.client.api_post(
                 "painelUsuario/tarefas",
                 {"numeroProcesso": "", "competencia": "", "etiquetas": []}
             )
+            
+            self.logger.debug(f"Status: {resp.status_code}")
+            
             if resp.status_code == 200:
                 todas = resp.json()
+                self.logger.debug(f"Resposta: {todas}")
+                
                 self.tarefas_cache = [
                     Tarefa.from_dict(t) for t in todas 
                     if t.get('quantidadePendente', 0) > 0
                 ]
                 self.logger.info(f"Encontradas {len(self.tarefas_cache)} tarefas")
                 return self.tarefas_cache
+            else:
+                self.logger.error(f"Erro ao listar tarefas: {resp.status_code}")
+                self.logger.debug(f"Resposta: {resp.text[:500]}")
         except Exception as e:
             self.logger.error(f"Erro ao listar tarefas: {e}")
         return []
@@ -60,45 +69,51 @@ class TaskService:
             return self.tarefas_favoritas_cache
         
         try:
+            self.logger.debug("Requisitando tarefas favoritas...")
             resp = self.client.api_post(
                 "painelUsuario/tarefasFavoritas",
                 {"numeroProcesso": "", "competencia": "", "etiquetas": []}
             )
+            
+            self.logger.debug(f"Status: {resp.status_code}")
+            
             if resp.status_code == 200:
                 todas = resp.json()
+                self.logger.debug(f"Resposta: {todas}")
+                
                 self.tarefas_favoritas_cache = [
                     Tarefa.from_dict(t, favorita=True) for t in todas 
                     if t.get('quantidadePendente', 0) > 0
                 ]
                 self.logger.info(f"Encontradas {len(self.tarefas_favoritas_cache)} tarefas favoritas")
                 return self.tarefas_favoritas_cache
+            else:
+                self.logger.error(f"Erro ao listar favoritas: {resp.status_code}")
+                self.logger.debug(f"Resposta: {resp.text[:500]}")
         except Exception as e:
             self.logger.error(f"Erro ao listar favoritas: {e}")
         return []
     
     def buscar_tarefa_por_nome(self, nome: str, usar_favoritas: bool = False) -> Optional[Tarefa]:
-        """Busca tarefa pelo nome (ignora acentos e maiúsculas)."""
+        """Busca tarefa pelo nome (ignora acentos e maiusculas)."""
         if usar_favoritas:
             lista = self.tarefas_favoritas_cache or self.listar_tarefas_favoritas()
         else:
             lista = self.tarefas_cache or self.listar_tarefas()
         
-        # Normaliza o nome buscado (remove acentos, minúsculo)
         nome_normalizado = normalizar_texto(nome)
         
-        # Busca exata (normalizada)
         for t in lista:
             if normalizar_texto(t.nome) == nome_normalizado:
                 self.logger.info(f"Tarefa encontrada: {t.nome}")
                 return t
         
-        # Busca parcial (normalizada)
         for t in lista:
             if nome_normalizado in normalizar_texto(t.nome):
                 self.logger.info(f"Tarefa encontrada: {t.nome}")
                 return t
         
-        self.logger.warning(f"Tarefa '{nome}' não encontrada")
+        self.logger.warning(f"Tarefa '{nome}' nao encontrada")
         return None
     
     def listar_processos_tarefa(
@@ -123,7 +138,7 @@ class TaskService:
         return [], 0
     
     def listar_todos_processos_tarefa(self, nome_tarefa: str, apenas_favoritas: bool = False) -> List[ProcessoTarefa]:
-        """Lista TODOS os processos (com paginação)."""
+        """Lista TODOS os processos (com paginacao)."""
         todos = []
         page = 0
         while True:

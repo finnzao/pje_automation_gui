@@ -1,5 +1,5 @@
 """
-Cliente HTTP base para comunicação com o PJE.
+Cliente HTTP base para comunicacao com o PJE.
 """
 
 import requests
@@ -23,6 +23,8 @@ class PJEHttpClient:
         headers = {
             "Content-Type": "application/json",
             "X-pje-legacy-app": "pje-tjba-1g",
+            "Origin": "https://frontend.cloud.pje.jus.br",
+            "Referer": "https://frontend.cloud.pje.jus.br/",
         }
         
         cookies_str = "; ".join([f"{c.name}={c.value}" for c in self.session.cookies])
@@ -44,10 +46,14 @@ class PJEHttpClient:
         return self.session.post(url, data=data, json=json, **kwargs)
     
     def api_get(self, endpoint: str, params: Optional[Dict] = None) -> requests.Response:
-        return self.get(f"{API_BASE}/{endpoint}", params=params, headers=self.get_api_headers())
+        """GET request para API REST com headers corretos."""
+        headers = self.get_api_headers()
+        return self.get(f"{API_BASE}/{endpoint}", params=params, headers=headers)
     
     def api_post(self, endpoint: str, json_data: Optional[Dict] = None) -> requests.Response:
-        return self.post(f"{API_BASE}/{endpoint}", json=json_data, headers=self.get_api_headers())
+        """POST request para API REST com headers corretos."""
+        headers = self.get_api_headers()
+        return self.post(f"{API_BASE}/{endpoint}", json=json_data, headers=headers)
     
     def close(self):
         self.session.close()

@@ -1,5 +1,5 @@
 """
-Módulo de interface gráfica do PJE Automation.
+Modulo de interface grafica do PJE Automation.
 """
 
 from .credential_manager import CredentialManager, PreferencesManager

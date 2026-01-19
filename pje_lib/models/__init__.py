@@ -1,6 +1,5 @@
 """
 Modelos de dados compartilhados do sistema PJE.
-Todas as dataclasses usadas pelas automações.
 """
 
 from dataclasses import dataclass, field
@@ -9,7 +8,7 @@ from typing import Dict, List, Optional
 
 @dataclass
 class Usuario:
-    """Usuário do sistema PJE."""
+    """Usuario do sistema PJE."""
     id_usuario: int
     nome: str
     login: str
@@ -33,7 +32,7 @@ class Usuario:
 
 @dataclass
 class Perfil:
-    """Perfil de acesso do usuário."""
+    """Perfil de acesso do usuario."""
     index: int
     nome: str
     orgao: str = ""
@@ -51,7 +50,7 @@ class Perfil:
 
 @dataclass
 class Tarefa:
-    """Tarefa no painel do usuário."""
+    """Tarefa no painel do usuario."""
     id: int
     nome: str
     quantidade_pendente: int = 0
@@ -91,7 +90,7 @@ class ProcessoTarefa:
 
 @dataclass
 class Etiqueta:
-    """Etiqueta para organização de processos."""
+    """Etiqueta para organizacao de processos."""
     id: int
     nome: str
     nome_completo: str = ""
@@ -149,7 +148,7 @@ class Processo:
 
 @dataclass
 class DownloadDisponivel:
-    """Download disponível na área de downloads."""
+    """Download disponivel na area de downloads."""
     id_usuario: int
     nome_arquivo: str
     hash_download: str
@@ -183,7 +182,7 @@ class DownloadDisponivel:
 
 @dataclass
 class DiagnosticoDownload:
-    """Diagnóstico de tentativa de download."""
+    """Diagnostico de tentativa de download."""
     numero_processo: str
     id_processo: int
     timestamp: float

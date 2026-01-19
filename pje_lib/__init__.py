@@ -1,21 +1,5 @@
 """
-PJE Lib - Biblioteca compartilhada para automação do PJE.
-
-Esta biblioteca pode ser importada por qualquer script na raiz do projeto.
-
-Uso básico:
-    from pje_lib import PJEClient
-    
-    pje = PJEClient()
-    pje.login()
-    pje.select_profile("Assessoria")
-    pje.processar_tarefa("Minutar sentença")
-    pje.close()
-
-Uso avançado (acesso aos serviços individuais):
-    from pje_lib import PJEClient
-    from pje_lib.services import DownloadService
-    from pje_lib.models import Processo, Tarefa
+PJE Lib - Biblioteca compartilhada para automacao do PJE.
 """
 
 import os

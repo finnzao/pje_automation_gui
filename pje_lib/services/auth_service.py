@@ -1,5 +1,5 @@
 """
-Serviço de autenticação do PJE.
+Servico de autenticacao do PJE.
 """
 
 import os
@@ -14,7 +14,7 @@ from ..utils import delay, get_logger, buscar_texto_similar, extrair_viewstate
 
 
 class AuthService:
-    """Serviço de autenticação e gerenciamento de perfil."""
+    """Servico de autenticacao e gerenciamento de perfil."""
     
     def __init__(self, http_client: PJEHttpClient, session_manager: SessionManager):
         self.client = http_client
@@ -31,27 +31,51 @@ class AuthService:
         self.client.usuario = value
     
     def verificar_sessao_ativa(self) -> bool:
-        """Verifica se há sessão ativa no servidor."""
+        """Verifica se ha sessao ativa no servidor."""
         try:
+            headers = self.client.get_api_headers()
             resp = self.client.session.get(
                 f"{API_BASE}/usuario/currentUser",
+                headers=headers,
                 timeout=self.client.timeout
             )
             if resp.status_code == 200:
-                self.usuario = Usuario.from_dict(resp.json())
+                data = resp.json()
+                self.usuario = Usuario.from_dict(data)
+                self.logger.debug(f"Usuario atualizado: {self.usuario.nome}, localizacao: {self.usuario.id_usuario_localizacao}")
                 return True
-        except Exception:
-            pass
+        except Exception as e:
+            self.logger.debug(f"Erro ao verificar sessao: {e}")
+        return False
+    
+    def atualizar_usuario(self) -> bool:
+        """Atualiza dados do usuario atual."""
+        try:
+            headers = self.client.get_api_headers()
+            resp = self.client.session.get(
+                f"{API_BASE}/usuario/currentUser",
+                headers=headers,
+                timeout=self.client.timeout
+            )
+            if resp.status_code == 200:
+                data = resp.json()
+                self.usuario = Usuario.from_dict(data)
+                self.logger.info(f"Usuario atualizado: {self.usuario.nome}")
+                self.logger.info(f"ID Usuario Localizacao: {self.usuario.id_usuario_localizacao}")
+                self.logger.info(f"ID Orgao Julgador: {self.usuario.id_orgao_julgador}")
+                return True
+        except Exception as e:
+            self.logger.error(f"Erro ao atualizar usuario: {e}")
         return False
     
     def restaurar_sessao(self) -> bool:
-        """Tenta restaurar sessão salva."""
+        """Tenta restaurar sessao salva."""
         if not self.session_manager.is_session_valid():
             return False
         if not self.session_manager.load_session(self.client.session):
             return False
         if self.verificar_sessao_ativa():
-            self.logger.info(f"Sessão restaurada: {self.usuario.nome}")
+            self.logger.info(f"Sessao restaurada: {self.usuario.nome}")
             return True
         return False
     
@@ -90,12 +114,12 @@ class AuthService:
             password = password or env_pass
         
         if not username or not password:
-            self.logger.error("Credenciais não fornecidas")
+            self.logger.error("Credenciais nao fornecidas")
             return False
         
         if not force:
             if self.verificar_sessao_ativa():
-                self.logger.info(f"Já logado: {self.usuario.nome}")
+                self.logger.info(f"Ja logado: {self.usuario.nome}")
                 return True
             if self.restaurar_sessao():
                 return True
@@ -105,7 +129,6 @@ class AuthService:
         self.logger.info(f"Iniciando login: {username}...")
         
         try:
-            # Limpa sessão antiga
             self.client.session.cookies.clear()
             
             resp = self.client.session.get(
@@ -115,12 +138,12 @@ class AuthService:
             )
             
             if "sso.cloud.pje.jus.br" not in resp.url:
-                self.logger.error("Não redirecionou para SSO")
+                self.logger.error("Nao redirecionou para SSO")
                 return False
             
             action_match = re.search(r'action="([^"]*)"', resp.text)
             if not action_match:
-                self.logger.error("URL de autenticação não encontrada")
+                self.logger.error("URL de autenticacao nao encontrada")
                 return False
             
             auth_url = action_match.group(1).replace("&amp;", "&")
@@ -152,7 +175,7 @@ class AuthService:
                 self.session_manager.save_session(self.client.session)
                 return True
             else:
-                self.logger.error("Falha na verificação pós-login")
+                self.logger.error("Falha na verificacao pos-login")
                 return False
                 
         except Exception as e:
@@ -160,35 +183,32 @@ class AuthService:
             return False
     
     def ensure_logged_in(self) -> bool:
-        """Garante que está logado."""
+        """Garante que esta logado."""
         if self.verificar_sessao_ativa():
             return True
         return self.login()
     
     def limpar_sessao(self):
-        """Limpa sessão salva."""
+        """Limpa sessao salva."""
         self.session_manager.clear_session()
         self.client.session.cookies.clear()
       
     def _extrair_perfis_da_pagina(self, html: str) -> List[Perfil]:
-        """Extrai perfis do HTML de uma página."""
+        """Extrai perfis do HTML de uma pagina."""
         perfis = []
         
-        # Padrão principal: links com onclick que contém dtPerfil:N:j_id70
         pattern = r"dtPerfil:(\d+):j_id70'[^>]*>([^<]+)</a>"
         matches = re.findall(pattern, html, re.IGNORECASE)
         
         if not matches:
-            # Padrão alternativo
             pattern = r'<a[^>]*onclick="[^"]*dtPerfil:(\d+)[^"]*"[^>]*>([^<]+)</a>'
             matches = re.findall(pattern, html, re.IGNORECASE)
         
         for index_str, nome in matches:
-            # Decodificar entidades HTML
-            nome = nome.replace("&ccedil;", "ç").replace("&atilde;", "ã")
-            nome = nome.replace("&aacute;", "á").replace("&eacute;", "é")
-            nome = nome.replace("&iacute;", "í").replace("&oacute;", "ó")
-            nome = nome.replace("&uacute;", "ú").replace("&amp;", "&")
+            nome = nome.replace("&ccedil;", "c").replace("&atilde;", "a")
+            nome = nome.replace("&aacute;", "a").replace("&eacute;", "e")
+            nome = nome.replace("&iacute;", "i").replace("&oacute;", "o")
+            nome = nome.replace("&uacute;", "u").replace("&amp;", "&")
             
             partes = nome.strip().split(" / ")
             perfis.append(Perfil(
@@ -201,11 +221,7 @@ class AuthService:
         return perfis
     
     def _tem_paginacao_visivel(self, html: str) -> bool:
-        """
-        Verifica se o DataScroller de perfis está visível.
-        Quando há poucos perfis, o scroller fica com display:none.
-        """
-        # Procurar pelo scroller de perfis
+        """Verifica se o DataScroller de perfis esta visivel."""
         scroller_pattern = r'id="[^"]*scPerfil"[^>]*style="[^"]*"'
         match = re.search(scroller_pattern, html)
         
@@ -214,17 +230,13 @@ class AuthService:
         
         scroller_tag = match.group(0)
         
-        # Se tiver display:none, a paginação está oculta
         if 'display: none' in scroller_tag or 'display:none' in scroller_tag:
             return False
         
         return True
     
     def _extrair_info_paginacao(self, html: str) -> dict:
-        """
-        Extrai informações de paginação do HTML.
-        Retorna dict com página_atual, total_paginas, tem_proxima.
-        """
+        """Extrai informacoes de paginacao do HTML."""
         info = {
             "pagina_atual": 1,
             "total_paginas": 1,
@@ -232,8 +244,6 @@ class AuthService:
             "tem_anterior": False
         }
         
-        # Procurar por indicadores de página no scroller
-        # Padrão RichFaces: class="rich-datascr-act" indica página atual
         paginas_match = re.findall(r'rich-datascr-inact[^>]*>(\d+)<|rich-datascr-act[^>]*>(\d+)<', html)
         
         if paginas_match:
@@ -252,26 +262,21 @@ class AuthService:
                 info["tem_proxima"] = pagina_atual < max(todas_paginas)
                 info["tem_anterior"] = pagina_atual > 1
         
-        # Verificar se há botão "próximo" (>>)
         if 'rich-datascr-button' in html:
-            # Procurar por botões de navegação ativos
             if re.search(r'rich-datascr-button[^"]*"[^>]*onclick[^>]*fastnext|next', html):
                 info["tem_proxima"] = True
         
         return info
     
     def _navegar_pagina_perfis(self, pagina: int, html_anterior: str) -> Optional[str]:
-        """
-        Navega para uma página específica de perfis via requisição AJAX.
-        """
+        """Navega para uma pagina especifica de perfis via requisicao AJAX."""
         viewstate = extrair_viewstate(html_anterior)
         if not viewstate:
             viewstate = "j_id1"
         
-        # Encontrar o ID do formulário do scroller
         form_id_match = re.search(r'id="([^"]*):scPerfil"', html_anterior)
         if not form_id_match:
-            self.logger.warning("Não foi possível encontrar o ID do scroller")
+            self.logger.warning("Nao foi possivel encontrar o ID do scroller")
             return None
         
         scroller_id = form_id_match.group(1) + ":scPerfil"
@@ -302,32 +307,29 @@ class AuthService:
             if resp.status_code == 200:
                 return resp.text
             else:
-                self.logger.warning(f"Erro ao navegar página: status {resp.status_code}")
+                self.logger.warning(f"Erro ao navegar pagina: status {resp.status_code}")
                 
         except Exception as e:
-            self.logger.error(f"Erro ao navegar para página {pagina}: {e}")
+            self.logger.error(f"Erro ao navegar para pagina {pagina}: {e}")
         
         return None
     
     def listar_perfis(self) -> List[Perfil]:
-        """
-        Lista TODOS os perfis disponíveis, navegando por múltiplas páginas se necessário.
-        """
+        """Lista TODOS os perfis disponiveis."""
         if not self.ensure_logged_in():
             return []
         
         todos_perfis = []
-        indices_vistos = set()  #  duplicatas
+        indices_vistos = set()
         
         try:
-
             resp = self.client.session.get(
                 f"{BASE_URL}/pje/ng2/dev.seam", 
                 timeout=self.client.timeout
             )
             
             if resp.status_code != 200:
-                self.logger.error(f"Erro ao acessar página de perfis: {resp.status_code}")
+                self.logger.error(f"Erro ao acessar pagina de perfis: {resp.status_code}")
                 return []
             
             html = resp.text
@@ -338,31 +340,31 @@ class AuthService:
                     todos_perfis.append(perfil)
                     indices_vistos.add(perfil.index)
             
-            self.logger.info(f"Página 1: {len(perfis_pagina)} perfis encontrados")
+            self.logger.info(f"Pagina 1: {len(perfis_pagina)} perfis encontrados")
             
             if self._tem_paginacao_visivel(html):
                 info_pag = self._extrair_info_paginacao(html)
-                self.logger.info(f"Paginação detectada: {info_pag['total_paginas']} páginas")
+                self.logger.info(f"Paginacao detectada: {info_pag['total_paginas']} paginas")
                 
                 pagina_atual = 1
                 max_tentativas = 20
                 
                 while pagina_atual < info_pag['total_paginas'] and pagina_atual < max_tentativas:
                     pagina_atual += 1
-                    self.logger.info(f"Carregando página {pagina_atual} de perfis...")
+                    self.logger.info(f"Carregando pagina {pagina_atual} de perfis...")
                     
                     delay(0.5, 1.0)
                     
                     html_pagina = self._navegar_pagina_perfis(pagina_atual, html)
                     
                     if not html_pagina:
-                        self.logger.warning(f"Falha ao carregar página {pagina_atual}")
+                        self.logger.warning(f"Falha ao carregar pagina {pagina_atual}")
                         break
                     
                     perfis_pagina = self._extrair_perfis_da_pagina(html_pagina)
                     
                     if not perfis_pagina:
-                        self.logger.info(f"Página {pagina_atual} não contém perfis, finalizando")
+                        self.logger.info(f"Pagina {pagina_atual} nao contem perfis, finalizando")
                         break
                     
                     novos_perfis = 0
@@ -372,13 +374,12 @@ class AuthService:
                             indices_vistos.add(perfil.index)
                             novos_perfis += 1
                     
-                    self.logger.info(f"Página {pagina_atual}: {novos_perfis} novos perfis")
+                    self.logger.info(f"Pagina {pagina_atual}: {novos_perfis} novos perfis")
                     
                     if novos_perfis == 0:
                         break
 
                     html = html_pagina
-                    
                     info_pag = self._extrair_info_paginacao(html)
             
             self.perfis_disponiveis = todos_perfis
@@ -393,7 +394,7 @@ class AuthService:
         return []
     
     def select_profile_by_index(self, profile_index: int) -> bool:
-        """Seleciona perfil pelo índice."""
+        """Seleciona perfil pelo indice."""
         if not self.ensure_logged_in():
             return False
         try:
@@ -420,9 +421,9 @@ class AuthService:
                 headers={"Content-Type": "application/x-www-form-urlencoded", "Origin": BASE_URL}
             )
             
-            delay()
+            delay(1.0, 2.0)
             
-            if self.verificar_sessao_ativa():
+            if self.atualizar_usuario():
                 self.logger.success(f"Perfil selecionado: {self.usuario.nome}")
                 self.session_manager.save_session(self.client.session)
                 return True
@@ -444,5 +445,5 @@ class AuthService:
             self.logger.info(f"Perfil encontrado: {perfil.nome_completo}")
             return self.select_profile_by_index(perfil.index)
         
-        self.logger.error(f"Perfil '{nome_perfil}' não encontrado")
+        self.logger.error(f"Perfil '{nome_perfil}' nao encontrado")
         return False

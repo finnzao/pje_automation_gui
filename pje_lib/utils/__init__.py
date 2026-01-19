@@ -1,5 +1,5 @@
 """
-Utilitários compartilhados do sistema PJE.
+Utilitarios compartilhados do sistema PJE.
 """
 
 import re
@@ -15,11 +15,8 @@ from difflib import SequenceMatcher
 from typing import Any, Optional, List, Callable
 
 
-# FUNÇÕES DE TEMPO E DELAY
-
 def delay(min_sec: float = 1.0, max_sec: float = 3.0) -> None:
-    """Pausa execução por tempo aleatorio. Nao bloqueante para UI."""
-    import time
+    """Pausa execucao por tempo aleatorio."""
     wait_time = random.uniform(min_sec, max_sec)
     time.sleep(wait_time)
 
@@ -30,11 +27,9 @@ def timestamp_str() -> str:
 
 
 def current_month_year() -> str:
-    """Mês/ano atual no formato MM/YYYY."""
+    """Mes/ano atual no formato MM/YYYY."""
     return datetime.now().strftime("%m/%Y")
 
-
-# FUNÇÕES DE STRING
 
 def normalizar_nome_pasta(nome: str) -> str:
     """Normaliza nome para uso em sistema de arquivos."""
@@ -57,23 +52,17 @@ def buscar_texto_similar(
     lista: List[str], 
     threshold: float = 0.6
 ) -> Optional[int]:
-    """
-    Busca texto similar em uma lista.
-    Retorna índice do item mais similar ou None.
-    """
+    """Busca texto similar em uma lista."""
     busca_lower = busca.lower().strip()
     
-    # Busca exata
     for i, item in enumerate(lista):
         if item.lower().strip() == busca_lower:
             return i
     
-    # Busca por conteúdo
     for i, item in enumerate(lista):
         if busca_lower in item.lower():
             return i
     
-    # Busca por similaridade
     melhor_match = None
     melhor_score = 0.0
     
@@ -86,15 +75,11 @@ def buscar_texto_similar(
     return melhor_match
 
 
-# FUNÇÕES DE HTML/VIEWSTATE
-
 def extrair_viewstate(html: str) -> Optional[str]:
     """Extrai ViewState de HTML JSF."""
     match = re.search(r'name="javax\.faces\.ViewState"[^>]*value="([^"]*)"', html)
     return match.group(1) if match else None
 
-
-# FUNÇÕES DE ARQUIVO
 
 def save_json(data: Any, filepath: Path) -> None:
     """Salva dados em JSON."""
@@ -111,8 +96,6 @@ def load_json(filepath: Path) -> Optional[Any]:
         return json.load(f)
 
 
-# LOGGER
-
 class PJELogger:
     """Logger customizado para o sistema PJE."""
     
@@ -120,7 +103,6 @@ class PJELogger:
     _callbacks: List[Callable[[str, str], None]] = []
     
     def __new__(cls, name: str = "pje", log_dir: Optional[Path] = None, debug: bool = False):
-        # Singleton por nome
         if name not in cls._instances:
             instance = super().__new__(cls)
             cls._instances[name] = instance
@@ -138,7 +120,6 @@ class PJELogger:
         self.logger.setLevel(logging.DEBUG if debug else logging.INFO)
         self.logger.handlers.clear()
         
-        # Console handler
         console = logging.StreamHandler(sys.stdout)
         console.setLevel(logging.DEBUG if debug else logging.INFO)
         console.setFormatter(logging.Formatter(
@@ -147,7 +128,6 @@ class PJELogger:
         ))
         self.logger.addHandler(console)
         
-        # File handler
         if log_dir:
             log_dir.mkdir(parents=True, exist_ok=True)
             file_handler = logging.FileHandler(
@@ -163,22 +143,18 @@ class PJELogger:
     
     @classmethod
     def add_callback(cls, callback: Callable[[str, str], None]):
-        """Adiciona callback para receber mensagens de log."""
         cls._callbacks.append(callback)
     
     @classmethod
     def remove_callback(cls, callback: Callable[[str, str], None]):
-        """Remove callback."""
         if callback in cls._callbacks:
             cls._callbacks.remove(callback)
     
     @classmethod
     def clear_callbacks(cls):
-        """Remove todos os callbacks."""
         cls._callbacks.clear()
     
     def _notify_callbacks(self, level: str, msg: str):
-        """Notifica todos os callbacks registrados."""
         for callback in self._callbacks:
             try:
                 callback(level, msg)
@@ -213,5 +189,5 @@ class PJELogger:
 
 
 def get_logger(name: str = "pje", log_dir: Optional[Path] = None, debug: bool = False) -> PJELogger:
-    """Obtém instância do logger."""
+    """Obtem instancia do logger."""
     return PJELogger(name, log_dir, debug)

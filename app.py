@@ -2,7 +2,7 @@ import streamlit as st
 
 st.set_page_config(
     page_title="PJE Download Manager",
-    page_icon="⚖️",
+    page_icon="",
     layout="wide",
     initial_sidebar_state="collapsed"
 )
@@ -59,7 +59,7 @@ def get_pje_client() -> Optional[PJEClient]:
     if st.session_state.pje_client is None:
         st.session_state.pje_client = PJEClient(
             download_dir=st.session_state.download_dir,
-            debug=False
+            debug=True
         )
     return st.session_state.pje_client
 
@@ -164,7 +164,7 @@ def do_login(username: str, password: str):
 
 def page_select_profile():
     st.title("Selecionar Perfil")
-    st.caption(f"Usuário: {st.session_state.user_name}")
+    st.caption(f"Usuario: {st.session_state.user_name}")
     
     pje = get_pje_client()
     
@@ -175,7 +175,7 @@ def page_select_profile():
             st.rerun()
     
     if not st.session_state.perfis:
-        with st.spinner("Carregando perfis (isso pode levar alguns segundos se houver muitos perfis)..."):
+        with st.spinner("Carregando perfis..."):
             st.session_state.perfis = pje.listar_perfis()
     
     perfis = st.session_state.perfis
@@ -192,12 +192,12 @@ def page_select_profile():
                 do_logout()
         return
     
-    st.info(f"{len(perfis)} perfil(is) disponível(is)")
+    st.info(f"{len(perfis)} perfil(is) disponivel(is)")
     
     busca_perfil = st.text_input(
-        "🔍 Buscar perfil", 
+        "Buscar perfil", 
         placeholder="Digite para filtrar...",
-        help="Filtre perfis por nome, órgão ou cargo"
+        help="Filtre perfis por nome, orgao ou cargo"
     )
     
     if busca_perfil:
@@ -230,6 +230,8 @@ def page_select_profile():
                     with st.spinner(f"Selecionando {perfil.nome}..."):
                         if pje.select_profile_by_index(perfil.index):
                             st.session_state.perfil_selecionado = perfil
+                            st.session_state.tarefas = []
+                            st.session_state.tarefas_favoritas = []
                             st.session_state.page = 'main_menu'
                             st.rerun()
                         else:

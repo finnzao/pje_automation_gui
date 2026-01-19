@@ -1,5 +1,5 @@
 """
-Gerenciador de sessão HTTP.
+Gerenciador de sessao HTTP.
 """
 
 import json
@@ -15,7 +15,7 @@ from ..config import MAX_SESSION_AGE_HOURS
 
 
 class SessionManager:
-    """Gerencia persistência de sessão (cookies)."""
+    """Gerencia persistencia de sessao (cookies)."""
     
     def __init__(self, session_dir: str = ".session"):
         self.session_dir = Path(session_dir)
@@ -24,7 +24,7 @@ class SessionManager:
         self.session_info_file = self.session_dir / "session_info.json"
     
     def save_session(self, session: requests.Session) -> bool:
-        """Salva cookies da sessão."""
+        """Salva cookies da sessao."""
         try:
             with open(self.cookies_file, 'wb') as f:
                 pickle.dump(session.cookies, f)
@@ -50,7 +50,7 @@ class SessionManager:
             return False
     
     def is_session_valid(self, max_age_hours: Optional[int] = None) -> bool:
-        """Verifica se sessão ainda é válida."""
+        """Verifica se sessao ainda e valida."""
         max_age = max_age_hours or MAX_SESSION_AGE_HOURS
         if not self.session_info_file.exists():
             return False
@@ -63,7 +63,7 @@ class SessionManager:
             return False
     
     def clear_session(self):
-        """Remove sessão salva."""
+        """Remove sessao salva."""
         if self.cookies_file.exists():
             self.cookies_file.unlink()
         if self.session_info_file.exists():

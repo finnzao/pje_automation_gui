@@ -1,6 +1,5 @@
 """
 Gerenciador de credenciais para armazenamento seguro local.
-Versão simplificada que funciona sem dependências externas de criptografia.
 """
 
 import os
@@ -12,22 +11,15 @@ from typing import Optional, Tuple
 
 
 class SimpleEncryption:
-    """
-    Criptografia simples usando XOR com chave derivada.
-    Não é tão segura quanto Fernet, mas funciona sem dependências extras.
-    """
-    
     def __init__(self, key: bytes):
         self.key = key
     
     def encrypt(self, data: bytes) -> bytes:
-        """Criptografa dados usando XOR."""
         key_extended = (self.key * (len(data) // len(self.key) + 1))[:len(data)]
         encrypted = bytes(a ^ b for a, b in zip(data, key_extended))
         return base64.b64encode(encrypted)
     
     def decrypt(self, data: bytes) -> bytes:
-        """Descriptografa dados usando XOR."""
         decoded = base64.b64decode(data)
         key_extended = (self.key * (len(decoded) // len(self.key) + 1))[:len(decoded)]
         decrypted = bytes(a ^ b for a, b in zip(decoded, key_extended))
@@ -35,11 +27,6 @@ class SimpleEncryption:
 
 
 class CredentialManager:
-    """
-    Gerencia credenciais de forma segura.
-    As credenciais são salvas localmente de forma ofuscada.
-    """
-    
     def __init__(self, config_dir: str = ".config"):
         self.config_dir = Path(config_dir)
         self.config_dir.mkdir(parents=True, exist_ok=True)
@@ -48,12 +35,10 @@ class CredentialManager:
         self._cipher = None
     
     def _get_machine_id(self) -> bytes:
-        """Obtém um ID único da máquina para derivação de chave."""
         machine_info = f"{os.name}-pje-automation-v2"
         return machine_info.encode()
     
     def _get_or_create_key(self) -> bytes:
-        """Obtém ou cria chave de criptografia."""
         if self.key_file.exists():
             with open(self.key_file, 'rb') as f:
                 salt = f.read()
@@ -62,20 +47,17 @@ class CredentialManager:
             with open(self.key_file, 'wb') as f:
                 f.write(salt)
         
-        # Deriva chave usando SHA256
         key_material = self._get_machine_id() + salt
         key = hashlib.sha256(key_material).digest()
         return key
     
     def _get_cipher(self) -> SimpleEncryption:
-        """Obtém instância do cipher para criptografia."""
         if self._cipher is None:
             key = self._get_or_create_key()
             self._cipher = SimpleEncryption(key)
         return self._cipher
     
     def save_credentials(self, username: str, password: str) -> bool:
-        """Salva credenciais de forma criptografada."""
         try:
             cipher = self._get_cipher()
             data = json.dumps({
@@ -93,7 +75,6 @@ class CredentialManager:
             return False
     
     def load_credentials(self) -> Tuple[Optional[str], Optional[str]]:
-        """Carrega credenciais salvas."""
         if not self.credentials_file.exists():
             return None, None
         
@@ -112,11 +93,9 @@ class CredentialManager:
             return None, None
     
     def has_saved_credentials(self) -> bool:
-        """Verifica se existem credenciais salvas."""
         return self.credentials_file.exists()
     
     def clear_credentials(self) -> bool:
-        """Remove credenciais salvas."""
         try:
             if self.credentials_file.exists():
                 self.credentials_file.unlink()
@@ -127,15 +106,12 @@ class CredentialManager:
 
 
 class PreferencesManager:
-    """Gerencia preferências do usuário."""
-    
     def __init__(self, config_dir: str = ".config"):
         self.config_dir = Path(config_dir)
         self.config_dir.mkdir(parents=True, exist_ok=True)
         self.preferences_file = self.config_dir / "preferences.json"
     
     def save_preferences(self, preferences: dict) -> bool:
-        """Salva preferências."""
         try:
             with open(self.preferences_file, 'w', encoding='utf-8') as f:
                 json.dump(preferences, f, ensure_ascii=False, indent=2)
@@ -144,7 +120,6 @@ class PreferencesManager:
             return False
     
     def load_preferences(self) -> dict:
-        """Carrega preferências."""
         if not self.preferences_file.exists():
             return {}
         try:
@@ -154,12 +129,10 @@ class PreferencesManager:
             return {}
     
     def get(self, key: str, default=None):
-        """Obtém uma preferência específica."""
         prefs = self.load_preferences()
         return prefs.get(key, default)
     
     def set(self, key: str, value) -> bool:
-        """Define uma preferência específica."""
         prefs = self.load_preferences()
         prefs[key] = value
         return self.save_preferences(prefs)
