@@ -168,6 +168,7 @@ def page_select_profile():
     
     pje = get_pje_client()
     
+<<<<<<< HEAD
     col_reload, col_spacer = st.columns([1, 4])
     with col_reload:
         if st.button("Atualizar", help="Recarregar lista de perfis"):
@@ -176,6 +177,10 @@ def page_select_profile():
     
     if not st.session_state.perfis:
         with st.spinner("Carregando perfis (isso pode levar alguns segundos se houver muitos perfis)..."):
+=======
+    if not st.session_state.perfis:
+        with st.spinner("Carregando perfis..."):
+>>>>>>> 23ae82c5de085ae6bad86fb27342d4acdf046627
             st.session_state.perfis = pje.listar_perfis()
     
     perfis = st.session_state.perfis
@@ -192,6 +197,7 @@ def page_select_profile():
                 do_logout()
         return
     
+<<<<<<< HEAD
     st.info(f" {len(perfis)} perfil(is) disponível(is)")
     
     busca_perfil = st.text_input(
@@ -216,6 +222,12 @@ def page_select_profile():
     st.markdown("---")
     
     for perfil in perfis_filtrados:
+=======
+    st.info(f"{len(perfis)} perfil(is) disponivel(is)")
+    st.markdown("---")
+    
+    for perfil in perfis:
+>>>>>>> 23ae82c5de085ae6bad86fb27342d4acdf046627
         with st.container():
             col1, col2 = st.columns([4, 1])
             with col1:
