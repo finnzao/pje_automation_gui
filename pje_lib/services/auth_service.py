@@ -4,12 +4,13 @@ Serviço de autenticação do PJE.
 
 import os
 import re
+import time
 from typing import Optional, List
 
 from ..config import BASE_URL, SSO_URL, API_BASE
 from ..core import SessionManager, PJEHttpClient
 from ..models import Usuario, Perfil
-from ..utils import delay, get_logger, buscar_texto_similar
+from ..utils import delay, get_logger, buscar_texto_similar, extrair_viewstate
 
 
 class AuthService:
@@ -168,19 +169,27 @@ class AuthService:
         """Limpa sessão salva."""
         self.session_manager.clear_session()
         self.client.session.cookies.clear()
-    
-    # PERFIL
+      
     def _extrair_perfis_da_pagina(self, html: str) -> List[Perfil]:
-        """Extrai perfis do HTML."""
+        """Extrai perfis do HTML de uma página."""
         perfis = []
-        pattern = r'dtPerfil:(\d+):j_id70[^>]*>([^<]+)</a>'
+        
+        # Padrão principal: links com onclick que contém dtPerfil:N:j_id70
+        pattern = r"dtPerfil:(\d+):j_id70'[^>]*>([^<]+)</a>"
         matches = re.findall(pattern, html, re.IGNORECASE)
         
         if not matches:
+            # Padrão alternativo
             pattern = r'<a[^>]*onclick="[^"]*dtPerfil:(\d+)[^"]*"[^>]*>([^<]+)</a>'
             matches = re.findall(pattern, html, re.IGNORECASE)
         
         for index_str, nome in matches:
+            # Decodificar entidades HTML
+            nome = nome.replace("&ccedil;", "ç").replace("&atilde;", "ã")
+            nome = nome.replace("&aacute;", "á").replace("&eacute;", "é")
+            nome = nome.replace("&iacute;", "í").replace("&oacute;", "ó")
+            nome = nome.replace("&uacute;", "ú").replace("&amp;", "&")
+            
             partes = nome.strip().split(" / ")
             perfis.append(Perfil(
                 index=int(index_str),
@@ -188,20 +197,199 @@ class AuthService:
                 orgao=partes[1] if len(partes) > 1 else "",
                 cargo=partes[2] if len(partes) > 2 else ""
             ))
+        
         return perfis
     
+    def _tem_paginacao_visivel(self, html: str) -> bool:
+        """
+        Verifica se o DataScroller de perfis está visível.
+        Quando há poucos perfis, o scroller fica com display:none.
+        """
+        # Procurar pelo scroller de perfis
+        scroller_pattern = r'id="[^"]*scPerfil"[^>]*style="[^"]*"'
+        match = re.search(scroller_pattern, html)
+        
+        if not match:
+            return False
+        
+        scroller_tag = match.group(0)
+        
+        # Se tiver display:none, a paginação está oculta
+        if 'display: none' in scroller_tag or 'display:none' in scroller_tag:
+            return False
+        
+        return True
+    
+    def _extrair_info_paginacao(self, html: str) -> dict:
+        """
+        Extrai informações de paginação do HTML.
+        Retorna dict com página_atual, total_paginas, tem_proxima.
+        """
+        info = {
+            "pagina_atual": 1,
+            "total_paginas": 1,
+            "tem_proxima": False,
+            "tem_anterior": False
+        }
+        
+        # Procurar por indicadores de página no scroller
+        # Padrão RichFaces: class="rich-datascr-act" indica página atual
+        paginas_match = re.findall(r'rich-datascr-inact[^>]*>(\d+)<|rich-datascr-act[^>]*>(\d+)<', html)
+        
+        if paginas_match:
+            todas_paginas = []
+            pagina_atual = 1
+            for inact, act in paginas_match:
+                if act:
+                    pagina_atual = int(act)
+                    todas_paginas.append(int(act))
+                elif inact:
+                    todas_paginas.append(int(inact))
+            
+            if todas_paginas:
+                info["pagina_atual"] = pagina_atual
+                info["total_paginas"] = max(todas_paginas)
+                info["tem_proxima"] = pagina_atual < max(todas_paginas)
+                info["tem_anterior"] = pagina_atual > 1
+        
+        # Verificar se há botão "próximo" (>>)
+        if 'rich-datascr-button' in html:
+            # Procurar por botões de navegação ativos
+            if re.search(r'rich-datascr-button[^"]*"[^>]*onclick[^>]*fastnext|next', html):
+                info["tem_proxima"] = True
+        
+        return info
+    
+    def _navegar_pagina_perfis(self, pagina: int, html_anterior: str) -> Optional[str]:
+        """
+        Navega para uma página específica de perfis via requisição AJAX.
+        """
+        viewstate = extrair_viewstate(html_anterior)
+        if not viewstate:
+            viewstate = "j_id1"
+        
+        # Encontrar o ID do formulário do scroller
+        form_id_match = re.search(r'id="([^"]*):scPerfil"', html_anterior)
+        if not form_id_match:
+            self.logger.warning("Não foi possível encontrar o ID do scroller")
+            return None
+        
+        scroller_id = form_id_match.group(1) + ":scPerfil"
+        form_id = form_id_match.group(1)
+        
+        form_data = {
+            "AJAXREQUEST": "_viewRoot",
+            form_id: form_id,
+            scroller_id: str(pagina),
+            "ajaxSingle": scroller_id,
+            "javax.faces.ViewState": viewstate,
+        }
+        
+        try:
+            resp = self.client.session.post(
+                f"{BASE_URL}/pje/ng2/dev.seam",
+                data=form_data,
+                timeout=self.client.timeout,
+                headers={
+                    "Content-Type": "application/x-www-form-urlencoded",
+                    "X-Requested-With": "XMLHttpRequest",
+                    "Accept": "*/*",
+                    "Origin": BASE_URL,
+                    "Referer": f"{BASE_URL}/pje/ng2/dev.seam"
+                }
+            )
+            
+            if resp.status_code == 200:
+                return resp.text
+            else:
+                self.logger.warning(f"Erro ao navegar página: status {resp.status_code}")
+                
+        except Exception as e:
+            self.logger.error(f"Erro ao navegar para página {pagina}: {e}")
+        
+        return None
+    
     def listar_perfis(self) -> List[Perfil]:
-        """Lista perfis disponíveis."""
+        """
+        Lista TODOS os perfis disponíveis, navegando por múltiplas páginas se necessário.
+        """
         if not self.ensure_logged_in():
             return []
+        
+        todos_perfis = []
+        indices_vistos = set()  #  duplicatas
+        
         try:
-            resp = self.client.session.get(f"{BASE_URL}/pje/ng2/dev.seam", timeout=self.client.timeout)
-            if resp.status_code == 200:
-                self.perfis_disponiveis = self._extrair_perfis_da_pagina(resp.text)
-                self.logger.info(f"Encontrados {len(self.perfis_disponiveis)} perfis")
-                return self.perfis_disponiveis
+
+            resp = self.client.session.get(
+                f"{BASE_URL}/pje/ng2/dev.seam", 
+                timeout=self.client.timeout
+            )
+            
+            if resp.status_code != 200:
+                self.logger.error(f"Erro ao acessar página de perfis: {resp.status_code}")
+                return []
+            
+            html = resp.text
+            
+            perfis_pagina = self._extrair_perfis_da_pagina(html)
+            for perfil in perfis_pagina:
+                if perfil.index not in indices_vistos:
+                    todos_perfis.append(perfil)
+                    indices_vistos.add(perfil.index)
+            
+            self.logger.info(f"Página 1: {len(perfis_pagina)} perfis encontrados")
+            
+            if self._tem_paginacao_visivel(html):
+                info_pag = self._extrair_info_paginacao(html)
+                self.logger.info(f"Paginação detectada: {info_pag['total_paginas']} páginas")
+                
+                pagina_atual = 1
+                max_tentativas = 20
+                
+                while pagina_atual < info_pag['total_paginas'] and pagina_atual < max_tentativas:
+                    pagina_atual += 1
+                    self.logger.info(f"Carregando página {pagina_atual} de perfis...")
+                    
+                    delay(0.5, 1.0)
+                    
+                    html_pagina = self._navegar_pagina_perfis(pagina_atual, html)
+                    
+                    if not html_pagina:
+                        self.logger.warning(f"Falha ao carregar página {pagina_atual}")
+                        break
+                    
+                    perfis_pagina = self._extrair_perfis_da_pagina(html_pagina)
+                    
+                    if not perfis_pagina:
+                        self.logger.info(f"Página {pagina_atual} não contém perfis, finalizando")
+                        break
+                    
+                    novos_perfis = 0
+                    for perfil in perfis_pagina:
+                        if perfil.index not in indices_vistos:
+                            todos_perfis.append(perfil)
+                            indices_vistos.add(perfil.index)
+                            novos_perfis += 1
+                    
+                    self.logger.info(f"Página {pagina_atual}: {novos_perfis} novos perfis")
+                    
+                    if novos_perfis == 0:
+                        break
+
+                    html = html_pagina
+                    
+                    info_pag = self._extrair_info_paginacao(html)
+            
+            self.perfis_disponiveis = todos_perfis
+            self.logger.info(f"Total: {len(todos_perfis)} perfis encontrados")
+            return todos_perfis
+            
         except Exception as e:
             self.logger.error(f"Erro ao listar perfis: {e}")
+            import traceback
+            self.logger.error(traceback.format_exc())
+        
         return []
     
     def select_profile_by_index(self, profile_index: int) -> bool:
