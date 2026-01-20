@@ -7,8 +7,9 @@ from datetime import datetime
 from typing import Optional, List, Dict, Any, Callable, Generator, Set
 import time
 import os
+import re
 
-from .config import DEFAULT_TIMEOUT
+from .config import DEFAULT_TIMEOUT, API_BASE
 from .core import SessionManager, PJEHttpClient
 from .services import AuthService, TaskService, TagService, DownloadService
 from .models import (
@@ -181,7 +182,6 @@ class PJEClient:
         return arquivos
     
     def _extrair_numero_processo_arquivo(self, nome_arquivo: str) -> Optional[str]:
-        import re
         match = re.match(r'^(\d{7}-\d{2}\.\d{4}\.\d\.\d{2}\.\d{4})', nome_arquivo)
         if match:
             return match.group(1)
@@ -236,6 +236,361 @@ class PJEClient:
                 time.sleep(10)
         
         return arquivos_baixados
+    
+    def buscar_processo_por_numero(self, numero_processo: str) -> Optional[Dict[str, Any]]:
+        """
+        Busca informações de um processo pelo número.
+        Retorna dict com id_processo e outras informações, ou None se não encontrado.
+        """
+        if not self.ensure_logged_in():
+            return None
+        
+        try:
+            # Usar a API de consulta de processo
+            headers = self._http.get_api_headers()
+            
+            # Tentar buscar o processo
+            resp = self._http.session.get(
+                f"{API_BASE}/processo/consulta/{numero_processo}",
+                headers=headers,
+                timeout=self.timeout
+            )
+            
+            if resp.status_code == 200:
+                data = resp.json()
+                return {
+                    "id_processo": data.get("idProcesso", 0),
+                    "numero_processo": numero_processo,
+                    "classe_judicial": data.get("classeJudicial", ""),
+                    "polo_ativo": data.get("poloAtivo", ""),
+                    "polo_passivo": data.get("poloPassivo", ""),
+                    "orgao_julgador": data.get("orgaoJulgador", "")
+                }
+            
+            # Tentar método alternativo - busca por número
+            resp = self._http.api_post(
+                "processo/list",
+                {"numeroProcesso": numero_processo}
+            )
+            
+            if resp.status_code == 200:
+                data = resp.json()
+                if isinstance(data, list) and len(data) > 0:
+                    proc = data[0]
+                    return {
+                        "id_processo": proc.get("idProcesso", 0),
+                        "numero_processo": numero_processo,
+                        "classe_judicial": proc.get("classeJudicial", ""),
+                        "polo_ativo": proc.get("poloAtivo", ""),
+                        "polo_passivo": proc.get("poloPassivo", ""),
+                        "orgao_julgador": proc.get("orgaoJulgador", "")
+                    }
+                elif isinstance(data, dict):
+                    return {
+                        "id_processo": data.get("idProcesso", 0),
+                        "numero_processo": numero_processo,
+                        "classe_judicial": data.get("classeJudicial", ""),
+                        "polo_ativo": data.get("poloAtivo", ""),
+                        "polo_passivo": data.get("poloPassivo", ""),
+                        "orgao_julgador": data.get("orgaoJulgador", "")
+                    }
+            
+            self.logger.warning(f"Processo nao encontrado via API: {numero_processo}")
+            return None
+            
+        except Exception as e:
+            self.logger.error(f"Erro ao buscar processo {numero_processo}: {e}")
+            return None
+    
+    def obter_id_processo_via_download(self, numero_processo: str) -> Optional[int]:
+        """
+        Tenta obter o ID do processo tentando solicitar o download diretamente.
+        Este método é um fallback quando a busca por API não funciona.
+        """
+        try:
+            # Gerar a chave de acesso pode revelar se o processo existe
+            # Vamos tentar abrir os autos digitais diretamente
+            from .config import BASE_URL
+            
+            # Primeiro, tentar acessar a página de consulta de processo
+            resp = self._http.session.get(
+                f"{BASE_URL}/pje/Processo/ConsultaProcesso/listView.seam",
+                timeout=self.timeout
+            )
+            
+            if resp.status_code != 200:
+                return None
+            
+            # Extrair viewstate
+            from .utils import extrair_viewstate
+            viewstate = extrair_viewstate(resp.text)
+            
+            if not viewstate:
+                return None
+            
+            # Fazer busca pelo número do processo
+            form_data = {
+                "fPP": "fPP",
+                "fPP:numeroProcesso:numeroSequencial": numero_processo[:7],
+                "fPP:numeroProcesso:digitoVerificador": numero_processo[8:10],
+                "fPP:numeroProcesso:anoProcesso": numero_processo[11:15],
+                "fPP:numeroProcesso:segmentoJustica": numero_processo[16],
+                "fPP:numeroProcesso:tRF": numero_processo[18:20],
+                "fPP:numeroProcesso:origemProcesso": numero_processo[21:25],
+                "fPP:j_id148": "fPP:j_id148",
+                "javax.faces.ViewState": viewstate,
+            }
+            
+            resp = self._http.session.post(
+                f"{BASE_URL}/pje/Processo/ConsultaProcesso/listView.seam",
+                data=form_data,
+                timeout=self.timeout,
+                headers={
+                    "Content-Type": "application/x-www-form-urlencoded",
+                    "Origin": BASE_URL,
+                }
+            )
+            
+            if resp.status_code == 200:
+                # Tentar extrair o ID do processo da resposta
+                match = re.search(r'idProcesso["\']?\s*[:=]\s*["\']?(\d+)', resp.text)
+                if match:
+                    return int(match.group(1))
+                
+                # Tentar outro padrão
+                match = re.search(r'Detalhe/listAutosDigitais\.seam\?idProcesso=(\d+)', resp.text)
+                if match:
+                    return int(match.group(1))
+            
+            return None
+            
+        except Exception as e:
+            self.logger.error(f"Erro ao obter ID do processo: {e}")
+            return None
+    
+    def processar_numeros_generator(
+        self,
+        numeros_processos: List[str],
+        tipo_documento: str = "Selecione",
+        aguardar_download: bool = True,
+        tempo_espera: int = 300
+    ) -> Generator[Dict[str, Any], None, Dict[str, Any]]:
+        """
+        Processa uma lista de números de processos para download.
+        
+        Args:
+            numeros_processos: Lista de números de processos no formato CNJ
+            tipo_documento: Tipo de documento a baixar
+            aguardar_download: Se deve aguardar os downloads ficarem disponíveis
+            tempo_espera: Tempo máximo de espera em segundos
+        
+        Yields:
+            Dict com estado atual do processamento
+        
+        Returns:
+            Relatório final do processamento
+        """
+        self._reset_cancelamento()
+        self._downloads.limpar_diagnosticos()
+        
+        # Criar diretório específico para downloads por número
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        diretorio = self.download_dir / f"processos_{timestamp}"
+        diretorio.mkdir(parents=True, exist_ok=True)
+        
+        relatorio = {
+            "tipo": "download_por_numero",
+            "diretorio": str(diretorio),
+            "data_inicio": datetime.now().isoformat(),
+            "processos": len(numeros_processos),
+            "sucesso": 0,
+            "falha": 0,
+            "arquivos": [],
+            "erros": [],
+            "status": "iniciando",
+            "processo_atual": "",
+            "progresso": 0,
+            "integridade": "pendente",
+            "retries": {"tentativas": 0, "processos_reprocessados": [], "processos_falha_definitiva": []}
+        }
+        
+        yield relatorio
+        
+        self.logger.section(f"PROCESSANDO {len(numeros_processos)} PROCESSOS POR NÚMERO")
+        
+        if not numeros_processos:
+            relatorio["status"] = "concluido"
+            relatorio["erros"].append("Nenhum processo informado")
+            yield relatorio
+            return relatorio
+        
+        processos_info = {}  # numero_processo -> {id_processo, ...}
+        processos_pendentes = []
+        total = len(numeros_processos)
+        
+        relatorio["status"] = "processando"
+        
+        for i, numero in enumerate(numeros_processos, 1):
+            if self._cancelar:
+                relatorio["status"] = "cancelado"
+                relatorio["erros"].append("Processamento cancelado")
+                yield relatorio
+                return relatorio
+            
+            relatorio["processo_atual"] = numero
+            relatorio["progresso"] = i
+            self.logger.info(f"[{i}/{total}] Processando {numero}")
+            yield relatorio
+            
+            # Tentar buscar informações do processo
+            relatorio["status"] = "buscando_processo"
+            yield relatorio
+            
+            proc_info = self.buscar_processo_por_numero(numero)
+            
+            if proc_info and proc_info.get("id_processo"):
+                id_processo = proc_info["id_processo"]
+            else:
+                # Tentar método alternativo
+                id_processo = self.obter_id_processo_via_download(numero)
+            
+            if not id_processo:
+                # Último recurso: tentar solicitar download diretamente usando
+                # a chave de acesso gerada pelo número do processo
+                self.logger.warning(f"Nao foi possivel obter ID do processo {numero}, tentando download direto")
+                
+                # Tentar gerar uma chave de acesso fictícia baseada no número
+                # Na prática, vamos tentar usar 0 como ID e deixar o sistema tentar
+                id_processo = 0
+            
+            processos_info[numero] = {
+                "id_processo": id_processo,
+                "numero_processo": numero
+            }
+            
+            relatorio["status"] = "processando"
+            yield relatorio
+            
+            # Solicitar download
+            if id_processo > 0:
+                sucesso, detalhes = self._downloads.solicitar_download(
+                    id_processo, numero, tipo_documento, diretorio_download=diretorio
+                )
+                
+                if sucesso:
+                    if detalhes.get("arquivo_baixado"):
+                        arquivo_path = Path(detalhes["arquivo_baixado"])
+                        if self._verificar_arquivo_valido(arquivo_path):
+                            relatorio["arquivos"].append(str(arquivo_path))
+                            relatorio["sucesso"] += 1
+                        else:
+                            processos_pendentes.append(numero)
+                    else:
+                        processos_pendentes.append(numero)
+                else:
+                    relatorio["falha"] += 1
+                    relatorio["erros"].append(f"Falha ao solicitar download: {numero}")
+            else:
+                # Se não temos ID, marcar como falha
+                relatorio["falha"] += 1
+                relatorio["erros"].append(f"Processo nao encontrado: {numero}")
+            
+            yield relatorio
+            time.sleep(2)
+        
+        # Aguardar downloads pendentes
+        if aguardar_download and processos_pendentes:
+            relatorio["status"] = "aguardando_downloads"
+            relatorio["processo_atual"] = f"Aguardando {len(processos_pendentes)} downloads"
+            yield relatorio
+            
+            arquivos = self._baixar_pendentes_verificado(processos_pendentes, diretorio, tempo_espera=tempo_espera)
+            for arq in arquivos:
+                if arq not in relatorio["arquivos"]:
+                    relatorio["arquivos"].append(arq)
+                    relatorio["sucesso"] += 1
+        
+        # Verificar integridade
+        relatorio["status"] = "verificando_integridade"
+        relatorio["processo_atual"] = "Verificando arquivos"
+        yield relatorio
+        
+        processos_esperados = list(numeros_processos)
+        integridade = self._verificar_integridade(processos_esperados, diretorio)
+        relatorio["integridade"] = integridade["integridade"]
+        processos_faltantes = integridade["processos_faltantes"]
+        
+        # Retries
+        tentativa = 0
+        while processos_faltantes and tentativa < self.max_retries:
+            tentativa += 1
+            relatorio["retries"]["tentativas"] = tentativa
+            relatorio["status"] = f"retry_{tentativa}"
+            relatorio["processo_atual"] = f"Retry {tentativa}/{self.max_retries} - {len(processos_faltantes)} processos"
+            self.logger.info(f"Retry {tentativa}: {len(processos_faltantes)} processos faltantes")
+            yield relatorio
+            
+            time.sleep(self.retry_delay)
+            
+            for num_proc in processos_faltantes[:]:
+                if self._cancelar:
+                    break
+                
+                if num_proc not in processos_info:
+                    continue
+                
+                proc = processos_info[num_proc]
+                if proc.get("id_processo", 0) <= 0:
+                    continue
+                
+                relatorio["processo_atual"] = f"Retry: {num_proc}"
+                yield relatorio
+                
+                sucesso, _ = self._downloads.solicitar_download(
+                    proc["id_processo"], num_proc, tipo_documento, diretorio_download=diretorio
+                )
+                if sucesso:
+                    relatorio["retries"]["processos_reprocessados"].append(num_proc)
+                time.sleep(3)
+            
+            time.sleep(15)
+            arquivos_retry = self._baixar_pendentes_verificado(processos_faltantes, diretorio, tempo_espera=60)
+            for arq in arquivos_retry:
+                if arq not in relatorio["arquivos"]:
+                    relatorio["arquivos"].append(arq)
+            
+            integridade = self._verificar_integridade(processos_esperados, diretorio)
+            processos_faltantes = integridade["processos_faltantes"]
+            relatorio["integridade"] = integridade["integridade"]
+        
+        if processos_faltantes:
+            relatorio["retries"]["processos_falha_definitiva"] = processos_faltantes
+        
+        # Finalizar
+        arquivos_validos = [a for a in relatorio["arquivos"] if self._verificar_arquivo_valido(Path(a))]
+        relatorio["arquivos"] = arquivos_validos
+        relatorio["sucesso"] = len(arquivos_validos)
+        relatorio["falha"] = relatorio["processos"] - relatorio["sucesso"]
+        relatorio["data_fim"] = datetime.now().isoformat()
+        
+        if relatorio["integridade"] == "ok":
+            relatorio["status"] = "concluido"
+        elif processos_faltantes:
+            relatorio["status"] = "concluido_com_falhas"
+        else:
+            relatorio["status"] = "concluido"
+        
+        relatorio["processo_atual"] = ""
+        save_json(relatorio, diretorio / f"relatorio_{timestamp_str()}.json")
+        
+        self.logger.section("RESUMO")
+        self.logger.info(f"Processos: {relatorio['processos']}")
+        self.logger.info(f"Sucesso: {relatorio['sucesso']}")
+        self.logger.info(f"Arquivos: {len(relatorio['arquivos'])}")
+        self.logger.info(f"Integridade: {relatorio['integridade']}")
+        
+        yield relatorio
+        return relatorio
     
     def processar_tarefa_generator(
         self,
@@ -680,6 +1035,28 @@ class PJEClient:
         relatorio = None
         for estado in self.processar_etiqueta_generator(
             nome_etiqueta, perfil, tipo_documento, limite,
+            aguardar_download, tempo_espera
+        ):
+            relatorio = estado
+            self._notify_progress(
+                estado.get("progresso", 0),
+                estado.get("processos", 0),
+                estado.get("processo_atual", ""),
+                estado.get("status", "")
+            )
+        return relatorio
+    
+    def processar_numeros(
+        self,
+        numeros_processos: List[str],
+        tipo_documento: str = "Selecione",
+        aguardar_download: bool = True,
+        tempo_espera: int = 300
+    ) -> Dict[str, Any]:
+        """Processa lista de números de processos (versão síncrona)."""
+        relatorio = None
+        for estado in self.processar_numeros_generator(
+            numeros_processos, tipo_documento,
             aguardar_download, tempo_espera
         ):
             relatorio = estado

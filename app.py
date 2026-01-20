@@ -13,9 +13,11 @@ import subprocess
 import platform
 import json
 import sys
+import shutil
+import re
 from pathlib import Path
 from datetime import datetime
-from typing import Optional
+from typing import Optional, List
 
 os.environ['PYTHONUNBUFFERED'] = '1'
 if hasattr(sys.stdout, 'reconfigure'):
@@ -85,6 +87,7 @@ def get_status_text(status: str) -> str:
         "iniciando": "Iniciando...",
         "buscando_tarefa": "Buscando tarefa...",
         "buscando_etiqueta": "Buscando etiqueta...",
+        "buscando_processo": "Buscando processo...",
         "listando_processos": "Listando processos...",
         "processando": "Processando...",
         "baixando_lote": "Baixando arquivos...",
@@ -100,15 +103,73 @@ def get_status_text(status: str) -> str:
     return texts.get(status, status)
 
 
-def do_logout():
+def limpar_sessao_e_config():
+    """Limpa completamente as pastas .config e .session"""
+    pastas_para_limpar = ['.config', '.session']
+    
+    for pasta in pastas_para_limpar:
+        pasta_path = Path(pasta)
+        if pasta_path.exists():
+            try:
+                shutil.rmtree(pasta_path)
+            except Exception as e:
+                st.warning(f"Nao foi possivel limpar {pasta}: {e}")
+    
+    # Recriar as pastas vazias
+    for pasta in pastas_para_limpar:
+        Path(pasta).mkdir(parents=True, exist_ok=True)
+
+
+def do_logout(limpar_tudo: bool = False):
+    """
+    Realiza logout do sistema.
+    
+    Args:
+        limpar_tudo: Se True, limpa também .config e .session
+    """
     if st.session_state.pje_client:
         try:
             st.session_state.pje_client.close()
         except:
             pass
+    
+    if limpar_tudo:
+        limpar_sessao_e_config()
+    
     for key in list(st.session_state.keys()):
         del st.session_state[key]
+    
     st.rerun()
+
+
+def validar_numero_processo(numero: str) -> bool:
+    """
+    Valida se o número do processo está no formato correto.
+    Formato: NNNNNNN-DD.AAAA.J.TR.OOOO
+    Exemplo: 0000001-23.2024.8.05.0001
+    """
+    # Remove espaços
+    numero = numero.strip()
+    
+    # Padrão CNJ
+    padrao = r'^\d{7}-\d{2}\.\d{4}\.\d\.\d{2}\.\d{4}$'
+    return bool(re.match(padrao, numero))
+
+
+def formatar_numero_processo(numero: str) -> Optional[str]:
+    """
+    Tenta formatar um número de processo para o padrão CNJ.
+    Aceita entrada com ou sem formatação.
+    """
+    # Remove tudo que não é número
+    apenas_numeros = re.sub(r'[^\d]', '', numero)
+    
+    # Deve ter 20 dígitos
+    if len(apenas_numeros) != 20:
+        return None
+    
+    # Formata no padrão CNJ
+    return f"{apenas_numeros[:7]}-{apenas_numeros[7:9]}.{apenas_numeros[9:13]}.{apenas_numeros[13]}.{apenas_numeros[14:16]}.{apenas_numeros[16:20]}"
 
 
 def page_login():
@@ -162,6 +223,7 @@ def do_login(username: str, password: str):
         except Exception as e:
             st.error(f"Erro: {str(e)}")
 
+
 def page_select_profile():
     st.title("Selecionar Perfil")
     st.caption(f"Usuario: {st.session_state.user_name}")
@@ -189,7 +251,7 @@ def page_select_profile():
                 st.rerun()
         with col2:
             if st.button("Sair", use_container_width=True):
-                do_logout()
+                do_logout(limpar_tudo=True)
         return
     
     st.info(f"{len(perfis)} perfil(is) disponivel(is)")
@@ -224,6 +286,9 @@ def page_select_profile():
                     nome_display += f" - {perfil.orgao}"
                 if perfil.cargo:
                     nome_display += f" ({perfil.cargo})"
+                # Indicar se é favorito
+                if hasattr(perfil, 'favorito') and perfil.favorito:
+                    nome_display += " ⭐"
                 st.markdown(nome_display)
             with col2:
                 if st.button("Selecionar", key=f"perfil_btn_{perfil.index}_{hash(perfil.nome)}"):
@@ -239,7 +304,8 @@ def page_select_profile():
     
     st.markdown("---")
     if st.button("Sair", use_container_width=True):
-        do_logout()
+        do_logout(limpar_tudo=True)
+
 
 def page_main_menu():
     perfil = st.session_state.perfil_selecionado
@@ -248,7 +314,7 @@ def page_main_menu():
     
     st.divider()
     
-    col1, col2 = st.columns(2)
+    col1, col2, col3 = st.columns(3)
     
     with col1:
         st.subheader("Por Tarefa")
@@ -264,21 +330,29 @@ def page_main_menu():
             st.session_state.page = 'download_by_tag'
             st.rerun()
     
+    with col3:
+        st.subheader("Por Número")
+        st.caption("Baixar processo específico")
+        if st.button("Abrir", key="btn_numero", use_container_width=True, type="primary"):
+            st.session_state.page = 'download_by_number'
+            st.rerun()
+    
     st.divider()
     
     c1, c2, c3 = st.columns(3)
     with c1:
         if st.button("Trocar Perfil", use_container_width=True):
-            st.session_state.page = 'select_profile'
+            # Limpar caches ao trocar de perfil
             st.session_state.tarefas = []
             st.session_state.tarefas_favoritas = []
+            st.session_state.page = 'select_profile'
             st.rerun()
     with c2:
         if st.button("Abrir Downloads", use_container_width=True):
             open_folder(st.session_state.download_dir)
     with c3:
         if st.button("Sair", use_container_width=True):
-            do_logout()
+            do_logout(limpar_tudo=True)
 
 
 def page_download_by_task():
@@ -291,6 +365,11 @@ def page_download_by_task():
         usar_favoritas = st.checkbox("Apenas favoritas")
         limite = st.number_input("Limite (0=todos)", min_value=0, max_value=500, value=0)
         tamanho_lote = st.slider("Tamanho lote", 5, 30, 10)
+        st.divider()
+        if st.button("Atualizar Tarefas", use_container_width=True):
+            st.session_state.tarefas = []
+            st.session_state.tarefas_favoritas = []
+            st.rerun()
         st.divider()
         if st.button("Voltar", use_container_width=True):
             st.session_state.page = 'main_menu'
@@ -308,7 +387,8 @@ def page_download_by_task():
         tarefas = st.session_state.tarefas
     
     if not tarefas:
-        st.info("Nenhuma tarefa encontrada")
+        st.warning("Nenhuma tarefa encontrada para este perfil.")
+        st.info("💡 Dica: Tente clicar em 'Atualizar Tarefas' na barra lateral ou verifique se o perfil selecionado possui tarefas pendentes.")
         if st.button("Atualizar"):
             st.session_state.tarefas = []
             st.session_state.tarefas_favoritas = []
@@ -327,7 +407,7 @@ def page_download_by_task():
     
     st.markdown("---")
     
-    for tarefa in tarefas_filtradas:
+    for idx, tarefa in enumerate(tarefas_filtradas):
         with st.container():
             col1, col2, col3 = st.columns([5, 1, 1])
             with col1:
@@ -335,7 +415,7 @@ def page_download_by_task():
             with col2:
                 st.caption(f"{tarefa.quantidade_pendente}")
             with col3:
-                if st.button("Baixar", key=f"tarefa_dl_{tarefa.id}_{hash(tarefa.nome)}"):
+                if st.button("Baixar", key=f"tarefa_dl_{idx}_{tarefa.id}"):
                     st.session_state.selected_task = tarefa
                     st.session_state.task_limit = limite if limite > 0 else None
                     st.session_state.task_usar_favoritas = usar_favoritas
@@ -364,11 +444,20 @@ def page_download_by_tag():
         with st.spinner("Buscando etiquetas..."):
             etiquetas = pje.buscar_etiquetas(busca)
         
+        # Remover duplicatas mantendo a primeira ocorrência
+        etiquetas_unicas = []
+        ids_vistos = set()
+        for et in etiquetas:
+            if et.id not in ids_vistos:
+                etiquetas_unicas.append(et)
+                ids_vistos.add(et.id)
+        etiquetas = etiquetas_unicas
+        
         if etiquetas:
             st.caption(f"{len(etiquetas)} etiqueta(s)")
             st.markdown("---")
             
-            for etiqueta in etiquetas:
+            for idx, etiqueta in enumerate(etiquetas):
                 with st.container():
                     col1, col2 = st.columns([4, 1])
                     with col1:
@@ -377,16 +466,177 @@ def page_download_by_tag():
                             nome_display += f" ({etiqueta.nome_completo})"
                         st.markdown(nome_display)
                     with col2:
-                        if st.button("Baixar", key=f"etiqueta_dl_{etiqueta.id}_{hash(etiqueta.nome)}"):
+                        if st.button("Baixar", key=f"etiqueta_dl_{idx}_{etiqueta.id}"):
                             st.session_state.selected_tag = etiqueta
                             st.session_state.tag_limit = limite if limite > 0 else None
                             st.session_state.tag_tamanho_lote = tamanho_lote
                             st.session_state.page = 'processing_tag'
                             st.rerun()
         else:
-            st.info(f"Nenhuma etiqueta encontrada para: '{busca}'")
+            st.warning(f"Nenhuma etiqueta encontrada para: '{busca}'")
+            st.info("💡 Dica: Verifique se a etiqueta existe no perfil selecionado.")
     else:
         st.info("Digite o nome da etiqueta para buscar")
+
+
+def page_download_by_number():
+    """Página para download por número de processo"""
+    st.title("Download por Número de Processo")
+    
+    pje = get_pje_client()
+    
+    with st.sidebar:
+        st.subheader("Opcoes")
+        tipo_documento = st.selectbox(
+            "Tipo de documento",
+            ["Selecione", "Peticao Inicial", "Peticao", "Sentenca", "Decisao", "Despacho", "Acordao", "Outros documentos"],
+            index=0
+        )
+        st.divider()
+        if st.button("Voltar", use_container_width=True):
+            st.session_state.page = 'main_menu'
+            st.rerun()
+    
+    st.markdown("""
+    ### Instruções
+    Digite o(s) número(s) do(s) processo(s) que deseja baixar.
+    
+    **Formatos aceitos:**
+    - Com formatação: `0000001-23.2024.8.05.0001`
+    - Sem formatação: `00000012320248050001`
+    
+    Para múltiplos processos, digite um por linha.
+    """)
+    
+    # Área de texto para múltiplos processos
+    numeros_input = st.text_area(
+        "Número(s) do(s) processo(s)",
+        placeholder="0000001-23.2024.8.05.0001\n0000002-45.2024.8.05.0001",
+        height=150
+    )
+    
+    # Processar entrada
+    if numeros_input:
+        linhas = [l.strip() for l in numeros_input.strip().split('\n') if l.strip()]
+        processos_validos = []
+        processos_invalidos = []
+        
+        for linha in linhas:
+            # Tentar formatar
+            numero_formatado = formatar_numero_processo(linha)
+            if numero_formatado:
+                processos_validos.append(numero_formatado)
+            elif validar_numero_processo(linha):
+                processos_validos.append(linha)
+            else:
+                processos_invalidos.append(linha)
+        
+        # Remover duplicatas mantendo ordem
+        processos_validos = list(dict.fromkeys(processos_validos))
+        
+        # Mostrar resumo
+        col1, col2 = st.columns(2)
+        with col1:
+            if processos_validos:
+                st.success(f"✓ {len(processos_validos)} processo(s) válido(s)")
+        with col2:
+            if processos_invalidos:
+                st.error(f"✗ {len(processos_invalidos)} processo(s) inválido(s)")
+        
+        # Mostrar processos inválidos
+        if processos_invalidos:
+            with st.expander("Ver processos inválidos"):
+                for p in processos_invalidos:
+                    st.code(p)
+        
+        # Mostrar processos válidos
+        if processos_validos:
+            with st.expander("Ver processos válidos", expanded=True):
+                for p in processos_validos:
+                    st.code(p)
+            
+            st.divider()
+            
+            # Botão para iniciar download
+            if st.button("Baixar Processo(s)", type="primary", use_container_width=True):
+                st.session_state.processos_para_baixar = processos_validos
+                st.session_state.tipo_documento_numero = tipo_documento
+                st.session_state.page = 'processing_number'
+                st.rerun()
+    else:
+        st.info("Digite pelo menos um número de processo para continuar.")
+
+
+def page_processing_number():
+    """Página de processamento para download por número"""
+    processos = st.session_state.get('processos_para_baixar', [])
+    tipo_documento = st.session_state.get('tipo_documento_numero', 'Selecione')
+    
+    if not processos:
+        st.session_state.page = 'download_by_number'
+        st.rerun()
+        return
+    
+    st.title("Processando")
+    st.caption(f"{len(processos)} processo(s)")
+    
+    status_text = st.empty()
+    progress_bar = st.progress(0)
+    processo_text = st.empty()
+    
+    col1, col2, col3, col4 = st.columns(4)
+    metric_total = col1.empty()
+    metric_prog = col2.empty()
+    metric_ok = col3.empty()
+    metric_files = col4.empty()
+    
+    st.divider()
+    
+    cancel_col = st.columns([1, 1, 1])[1]
+    with cancel_col:
+        if st.button("Cancelar", use_container_width=True, key="cancel_btn_number"):
+            pje = get_pje_client()
+            pje.cancelar_processamento()
+    
+    pje = get_pje_client()
+    
+    try:
+        generator = pje.processar_numeros_generator(
+            numeros_processos=processos,
+            tipo_documento=tipo_documento,
+            aguardar_download=True
+        )
+        
+        for estado in generator:
+            status = estado.get('status', '')
+            progresso = estado.get('progresso', 0)
+            total = estado.get('processos', 0)
+            proc_atual = estado.get('processo_atual', '')
+            
+            status_text.markdown(f"**Status:** {get_status_text(status)}")
+            
+            if total > 0:
+                progress_bar.progress(min(progresso / total, 1.0))
+            
+            processo_text.text(proc_atual if proc_atual else "")
+            
+            metric_total.metric("Total", total)
+            metric_prog.metric("Progresso", f"{progresso}/{total}")
+            metric_ok.metric("OK", estado.get('sucesso', 0))
+            metric_files.metric("Arquivos", len(estado.get('arquivos', [])))
+            
+            if status in ['concluido', 'concluido_com_falhas', 'cancelado', 'erro']:
+                st.session_state.relatorio = estado
+                time.sleep(0.5)
+                st.session_state.page = 'result'
+                st.rerun()
+                break
+        
+    except Exception as e:
+        st.error(f"Erro: {str(e)}")
+        if st.button("Voltar"):
+            st.session_state.page = 'download_by_number'
+            st.rerun()
 
 
 def page_processing_task():
@@ -611,7 +861,7 @@ def page_result():
             st.rerun()
     with col2:
         if st.button("Sair", use_container_width=True):
-            do_logout()
+            do_logout(limpar_tudo=True)
 
 
 def main():
@@ -623,8 +873,10 @@ def main():
         'main_menu': page_main_menu,
         'download_by_task': page_download_by_task,
         'download_by_tag': page_download_by_tag,
+        'download_by_number': page_download_by_number,
         'processing_task': page_processing_task,
         'processing_tag': page_processing_tag,
+        'processing_number': page_processing_number,
         'result': page_result
     }
     
