@@ -29,7 +29,6 @@ class Usuario:
             id_usuario_localizacao=data.get("idUsuarioLocalizacaoMagistradoServidor", 0)
         )
 
-
 @dataclass
 class Perfil:
     """Perfil de acesso do usuario."""
@@ -37,6 +36,7 @@ class Perfil:
     nome: str
     orgao: str = ""
     cargo: str = ""
+    favorito: bool = False
     
     @property
     def nome_completo(self) -> str:

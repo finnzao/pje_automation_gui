@@ -192,31 +192,96 @@ class AuthService:
         """Limpa sessao salva."""
         self.session_manager.clear_session()
         self.client.session.cookies.clear()
-      
+    
+    def _decode_html_entities(self, nome: str) -> str:
+        """Decodifica entidades HTML em texto."""
+        nome = nome.replace("&ccedil;", "ç").replace("&Ccedil;", "Ç")
+        nome = nome.replace("&atilde;", "ã").replace("&Atilde;", "Ã")
+        nome = nome.replace("&aacute;", "á").replace("&Aacute;", "Á")
+        nome = nome.replace("&eacute;", "é").replace("&Eacute;", "É")
+        nome = nome.replace("&iacute;", "í").replace("&Iacute;", "Í")
+        nome = nome.replace("&oacute;", "ó").replace("&Oacute;", "Ó")
+        nome = nome.replace("&uacute;", "ú").replace("&Uacute;", "Ú")
+        nome = nome.replace("&acirc;", "â").replace("&Acirc;", "Â")
+        nome = nome.replace("&ecirc;", "ê").replace("&Ecirc;", "Ê")
+        nome = nome.replace("&ocirc;", "ô").replace("&Ocirc;", "Ô")
+        nome = nome.replace("&otilde;", "õ").replace("&Otilde;", "Õ")
+        nome = nome.replace("&agrave;", "à").replace("&Agrave;", "À")
+        nome = nome.replace("&amp;", "&")
+        nome = nome.replace("&nbsp;", " ")
+        return nome.strip()
+    
+    def _extrair_perfil_favorito_do_header(self, html: str) -> Optional[Perfil]:
+        """
+        Extrai o perfil favorito que aparece no HEADER da tabela.
+        """
+        try:
+            # Buscar o header da tabela de perfis
+            thead_pattern = r'<thead[^>]*class="rich-table-thead"[^>]*>.*?</thead>'
+            thead_match = re.search(thead_pattern, html, re.IGNORECASE | re.DOTALL)
+            
+            if not thead_match:
+                return None
+            
+            thead_html = thead_match.group(0)
+            
+            if 'favorite-16x16.png' not in thead_html or 'favorite-16x16-disabled.png' in thead_html:
+                return None
+            
+            perfil_header_pattern = r"dtPerfil:j_id66[^>]*>([^<]+)</a>"
+            match = re.search(perfil_header_pattern, thead_html, re.IGNORECASE)
+            
+            if not match:
+                return None
+            
+            nome = self._decode_html_entities(match.group(1))
+            partes = nome.split(" / ")
+            
+            perfil = Perfil(
+                index=-1,
+                nome=partes[0] if partes else nome,
+                orgao=partes[1] if len(partes) > 1 else "",
+                cargo=partes[2] if len(partes) > 2 else "",
+                favorito=True
+            )
+            
+            self.logger.debug(f"Perfil favorito encontrado no header: {perfil.nome_completo}")
+            return perfil
+            
+        except Exception as e:
+            self.logger.debug(f"Erro ao extrair perfil favorito do header: {e}")
+            return None
+    
     def _extrair_perfis_da_pagina(self, html: str) -> List[Perfil]:
-        """Extrai perfis do HTML de uma pagina."""
+        """
+        Extrai perfis do HTML de uma pagina.
+        """
         perfis = []
+        
+        perfil_favorito = self._extrair_perfil_favorito_do_header(html)
+        if perfil_favorito:
+            perfis.append(perfil_favorito)
+            self.logger.debug(f"Adicionado perfil favorito: {perfil_favorito.nome_completo}")
         
         pattern = r"dtPerfil:(\d+):j_id70'[^>]*>([^<]+)</a>"
         matches = re.findall(pattern, html, re.IGNORECASE)
         
         if not matches:
-            pattern = r'<a[^>]*onclick="[^"]*dtPerfil:(\d+)[^"]*"[^>]*>([^<]+)</a>'
+            pattern = r'<a[^>]*onclick="[^"]*dtPerfil:(\d+)[^"]*j_id70[^"]*"[^>]*>([^<]+)</a>'
             matches = re.findall(pattern, html, re.IGNORECASE)
         
         for index_str, nome in matches:
-            nome = nome.replace("&ccedil;", "c").replace("&atilde;", "a")
-            nome = nome.replace("&aacute;", "a").replace("&eacute;", "e")
-            nome = nome.replace("&iacute;", "i").replace("&oacute;", "o")
-            nome = nome.replace("&uacute;", "u").replace("&amp;", "&")
+            nome = self._decode_html_entities(nome)
+            partes = nome.split(" / ")
             
-            partes = nome.strip().split(" / ")
-            perfis.append(Perfil(
+            perfil = Perfil(
                 index=int(index_str),
-                nome=partes[0] if partes else nome.strip(),
+                nome=partes[0] if partes else nome,
                 orgao=partes[1] if len(partes) > 1 else "",
-                cargo=partes[2] if len(partes) > 2 else ""
-            ))
+                cargo=partes[2] if len(partes) > 2 else "",
+                favorito=False
+            )
+            perfis.append(perfil)
         
         return perfis
     
@@ -315,13 +380,14 @@ class AuthService:
         return None
     
     def listar_perfis(self) -> List[Perfil]:
-        """Lista TODOS os perfis disponiveis."""
+        """Lista TODOS os perfis disponiveis, incluindo o perfil favorito."""
         if not self.ensure_logged_in():
             return []
         
         todos_perfis = []
         indices_vistos = set()
-        
+        nomes_vistos = set()
+
         try:
             resp = self.client.session.get(
                 f"{BASE_URL}/pje/ng2/dev.seam", 
@@ -336,9 +402,11 @@ class AuthService:
             
             perfis_pagina = self._extrair_perfis_da_pagina(html)
             for perfil in perfis_pagina:
-                if perfil.index not in indices_vistos:
+                nome_key = perfil.nome_completo.lower()
+                if perfil.index not in indices_vistos and nome_key not in nomes_vistos:
                     todos_perfis.append(perfil)
                     indices_vistos.add(perfil.index)
+                    nomes_vistos.add(nome_key)
             
             self.logger.info(f"Pagina 1: {len(perfis_pagina)} perfis encontrados")
             
@@ -369,9 +437,11 @@ class AuthService:
                     
                     novos_perfis = 0
                     for perfil in perfis_pagina:
-                        if perfil.index not in indices_vistos:
+                        nome_key = perfil.nome_completo.lower()
+                        if perfil.index not in indices_vistos and nome_key not in nomes_vistos:
                             todos_perfis.append(perfil)
                             indices_vistos.add(perfil.index)
+                            nomes_vistos.add(nome_key)
                             novos_perfis += 1
                     
                     self.logger.info(f"Pagina {pagina_atual}: {novos_perfis} novos perfis")
@@ -383,6 +453,11 @@ class AuthService:
                     info_pag = self._extrair_info_paginacao(html)
             
             self.perfis_disponiveis = todos_perfis
+            
+            favoritos = [p for p in todos_perfis if p.favorito]
+            if favoritos:
+                self.logger.info(f"Perfil(is) favorito(s): {[p.nome_completo for p in favoritos]}")
+            
             self.logger.info(f"Total: {len(todos_perfis)} perfis encontrados")
             return todos_perfis
             
@@ -394,7 +469,9 @@ class AuthService:
         return []
     
     def select_profile_by_index(self, profile_index: int) -> bool:
-        """Seleciona perfil pelo indice."""
+        """
+        Seleciona perfil pelo indice.
+        """
         if not self.ensure_logged_in():
             return False
         try:
@@ -405,12 +482,17 @@ class AuthService:
             
             delay()
             
+            if profile_index == -1:
+                element_id = "papeisUsuarioForm:dtPerfil:j_id66"
+            else:
+                element_id = f"papeisUsuarioForm:dtPerfil:{profile_index}:j_id70"
+            
             form_data = {
                 "papeisUsuarioForm": "papeisUsuarioForm",
                 "papeisUsuarioForm:j_id60": "",
                 "papeisUsuarioForm:j_id72": "papeisUsuarioForm:j_id72",
                 "javax.faces.ViewState": viewstate,
-                f"papeisUsuarioForm:dtPerfil:{profile_index}:j_id70": f"papeisUsuarioForm:dtPerfil:{profile_index}:j_id70"
+                element_id: element_id
             }
             
             self.client.session.post(
