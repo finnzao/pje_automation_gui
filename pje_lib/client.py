@@ -9,14 +9,14 @@ import time
 import os
 import re
 
-from .config import DEFAULT_TIMEOUT, API_BASE
+from .config import DEFAULT_TIMEOUT, API_BASE, BASE_URL
 from .core import SessionManager, PJEHttpClient
 from .services import AuthService, TaskService, TagService, DownloadService
 from .models import (
     Usuario, Perfil, Tarefa, ProcessoTarefa, 
     Etiqueta, Processo, DownloadDisponivel
 )
-from .utils import delay, normalizar_nome_pasta, save_json, timestamp_str, get_logger
+from .utils import delay, normalizar_nome_pasta, save_json, timestamp_str, get_logger, extrair_viewstate
 
 
 class PJEClient:
@@ -82,10 +82,17 @@ class PJEClient:
                 pass
     
     def cancelar_processamento(self):
+        """Marca flag de cancelamento."""
         self._cancelar = True
+        self.logger.info("Cancelamento solicitado pelo usuario")
     
     def _reset_cancelamento(self):
+        """Reseta flag de cancelamento."""
         self._cancelar = False
+    
+    def _check_cancelado(self) -> bool:
+        """Verifica se foi solicitado cancelamento."""
+        return self._cancelar
     
     def login(self, username: str = None, password: str = None, force: bool = False) -> bool:
         return self._auth.login(username, password, force)
@@ -220,9 +227,17 @@ class PJEClient:
         processos_restantes = set(processos)
         
         while processos_restantes and (time.time() - inicio) < tempo_espera:
+            # Verificar cancelamento
+            if self._check_cancelado():
+                self.logger.info("Download pendente cancelado")
+                break
+            
             downloads = self._downloads.listar_downloads_disponiveis()
             
             for download in downloads:
+                if self._check_cancelado():
+                    break
+                    
                 numeros = download.get_numeros_processos()
                 for num in numeros:
                     if num in processos_restantes:
@@ -231,7 +246,7 @@ class PJEClient:
                             arquivos_baixados.append(str(arquivo))
                             processos_restantes.discard(num)
             
-            if processos_restantes:
+            if processos_restantes and not self._check_cancelado():
                 self.logger.info(f"Restantes: {len(processos_restantes)}")
                 time.sleep(10)
         
@@ -239,61 +254,109 @@ class PJEClient:
     
     def buscar_processo_por_numero(self, numero_processo: str) -> Optional[Dict[str, Any]]:
         """
-        Busca informações de um processo pelo número.
-        Retorna dict com id_processo e outras informações, ou None se não encontrado.
+        Busca informações de um processo pelo número usando a página de consulta.
         """
         if not self.ensure_logged_in():
             return None
         
         try:
-            # Usar a API de consulta de processo
-            headers = self._http.get_api_headers()
+            # Método 1: Tentar via página de consulta pública
+            self.logger.debug(f"Buscando processo via consulta: {numero_processo}")
             
-            # Tentar buscar o processo
+            # Acessar página de consulta de processos
             resp = self._http.session.get(
-                f"{API_BASE}/processo/consulta/{numero_processo}",
-                headers=headers,
+                f"{BASE_URL}/pje/ConsultaPublica/listView.seam",
                 timeout=self.timeout
             )
             
             if resp.status_code == 200:
-                data = resp.json()
-                return {
-                    "id_processo": data.get("idProcesso", 0),
-                    "numero_processo": numero_processo,
-                    "classe_judicial": data.get("classeJudicial", ""),
-                    "polo_ativo": data.get("poloAtivo", ""),
-                    "polo_passivo": data.get("poloPassivo", ""),
-                    "orgao_julgador": data.get("orgaoJulgador", "")
-                }
+                viewstate = extrair_viewstate(resp.text)
+                
+                if viewstate:
+                    # Extrair partes do número do processo
+                    partes = self._extrair_partes_numero_processo(numero_processo)
+                    if partes:
+                        # Fazer busca
+                        form_data = {
+                            "fPP": "fPP",
+                            "fPP:numeroProcesso:numeroSequencial": partes["sequencial"],
+                            "fPP:numeroProcesso:digitoVerificador": partes["digito"],
+                            "fPP:numeroProcesso:anoProcesso": partes["ano"],
+                            "fPP:numeroProcesso:segmentoJustica": partes["segmento"],
+                            "fPP:numeroProcesso:tRF": partes["tribunal"],
+                            "fPP:numeroProcesso:origemProcesso": partes["origem"],
+                            "fPP:j_id148": "fPP:j_id148",
+                            "javax.faces.ViewState": viewstate,
+                        }
+                        
+                        resp_busca = self._http.session.post(
+                            f"{BASE_URL}/pje/ConsultaPublica/listView.seam",
+                            data=form_data,
+                            timeout=self.timeout,
+                            headers={
+                                "Content-Type": "application/x-www-form-urlencoded",
+                                "Origin": BASE_URL,
+                            }
+                        )
+                        
+                        if resp_busca.status_code == 200:
+                            # Procurar ID do processo na resposta
+                            id_match = re.search(r'idProcesso[=:](\d+)', resp_busca.text)
+                            if id_match:
+                                return {
+                                    "id_processo": int(id_match.group(1)),
+                                    "numero_processo": numero_processo
+                                }
             
-            # Tentar método alternativo - busca por número
+            # Método 2: Tentar busca via painel do usuário
+            self.logger.debug(f"Tentando busca via painel do usuario")
             resp = self._http.api_post(
-                "processo/list",
-                {"numeroProcesso": numero_processo}
+                "painelUsuario/processos",
+                {"numeroProcesso": numero_processo, "page": 0, "maxResults": 1}
             )
             
             if resp.status_code == 200:
                 data = resp.json()
-                if isinstance(data, list) and len(data) > 0:
+                if isinstance(data, dict) and data.get("entities"):
+                    proc = data["entities"][0]
+                    return {
+                        "id_processo": proc.get("idProcesso", 0),
+                        "numero_processo": numero_processo
+                    }
+                elif isinstance(data, list) and len(data) > 0:
                     proc = data[0]
                     return {
                         "id_processo": proc.get("idProcesso", 0),
-                        "numero_processo": numero_processo,
-                        "classe_judicial": proc.get("classeJudicial", ""),
-                        "polo_ativo": proc.get("poloAtivo", ""),
-                        "polo_passivo": proc.get("poloPassivo", ""),
-                        "orgao_julgador": proc.get("orgaoJulgador", "")
+                        "numero_processo": numero_processo
                     }
-                elif isinstance(data, dict):
-                    return {
-                        "id_processo": data.get("idProcesso", 0),
-                        "numero_processo": numero_processo,
-                        "classe_judicial": data.get("classeJudicial", ""),
-                        "polo_ativo": data.get("poloAtivo", ""),
-                        "polo_passivo": data.get("poloPassivo", ""),
-                        "orgao_julgador": data.get("orgaoJulgador", "")
-                    }
+            
+            # Método 3: Tentar via tarefas
+            self.logger.debug(f"Tentando busca via tarefas")
+            resp = self._http.api_post(
+                "painelUsuario/tarefas",
+                {"numeroProcesso": numero_processo, "competencia": "", "etiquetas": []}
+            )
+            
+            if resp.status_code == 200:
+                tarefas = resp.json()
+                if tarefas:
+                    # Buscar processos em cada tarefa encontrada
+                    for tarefa in tarefas[:3]:  # Limitar a 3 tarefas
+                        nome_tarefa = tarefa.get("nome", "")
+                        if nome_tarefa:
+                            from urllib.parse import quote
+                            resp_proc = self._http.api_post(
+                                f"painelUsuario/recuperarProcessosTarefaPendenteComCriterios/{quote(nome_tarefa)}/false",
+                                {"numeroProcesso": numero_processo, "page": 0, "maxResults": 1}
+                            )
+                            if resp_proc.status_code == 200:
+                                data = resp_proc.json()
+                                if data.get("entities"):
+                                    proc = data["entities"][0]
+                                    return {
+                                        "id_processo": proc.get("idProcesso", 0),
+                                        "numero_processo": numero_processo
+                                    }
             
             self.logger.warning(f"Processo nao encontrado via API: {numero_processo}")
             return None
@@ -302,70 +365,118 @@ class PJEClient:
             self.logger.error(f"Erro ao buscar processo {numero_processo}: {e}")
             return None
     
-    def obter_id_processo_via_download(self, numero_processo: str) -> Optional[int]:
+    def _extrair_partes_numero_processo(self, numero: str) -> Optional[Dict[str, str]]:
+        """Extrai as partes do número do processo no formato CNJ."""
+        # Formato: NNNNNNN-DD.AAAA.J.TR.OOOO
+        match = re.match(r'^(\d{7})-(\d{2})\.(\d{4})\.(\d)\.(\d{2})\.(\d{4})$', numero)
+        if match:
+            return {
+                "sequencial": match.group(1),
+                "digito": match.group(2),
+                "ano": match.group(3),
+                "segmento": match.group(4),
+                "tribunal": match.group(5),
+                "origem": match.group(6)
+            }
+        return None
+    
+    def obter_id_processo_via_painel(self, numero_processo: str) -> Optional[int]:
         """
-        Tenta obter o ID do processo tentando solicitar o download diretamente.
-        Este método é um fallback quando a busca por API não funciona.
+        Tenta obter o ID do processo através do painel usando busca filtrada.
         """
         try:
-            # Gerar a chave de acesso pode revelar se o processo existe
-            # Vamos tentar abrir os autos digitais diretamente
-            from .config import BASE_URL
+            # Buscar em todas as tarefas usando o número como filtro
+            self.logger.debug(f"Buscando ID via filtro de tarefa: {numero_processo}")
             
-            # Primeiro, tentar acessar a página de consulta de processo
-            resp = self._http.session.get(
-                f"{BASE_URL}/pje/Processo/ConsultaProcesso/listView.seam",
-                timeout=self.timeout
-            )
+            # Primeiro, obter lista de tarefas
+            tarefas = self._tasks.listar_tarefas()
             
-            if resp.status_code != 200:
-                return None
-            
-            # Extrair viewstate
-            from .utils import extrair_viewstate
-            viewstate = extrair_viewstate(resp.text)
-            
-            if not viewstate:
-                return None
-            
-            # Fazer busca pelo número do processo
-            form_data = {
-                "fPP": "fPP",
-                "fPP:numeroProcesso:numeroSequencial": numero_processo[:7],
-                "fPP:numeroProcesso:digitoVerificador": numero_processo[8:10],
-                "fPP:numeroProcesso:anoProcesso": numero_processo[11:15],
-                "fPP:numeroProcesso:segmentoJustica": numero_processo[16],
-                "fPP:numeroProcesso:tRF": numero_processo[18:20],
-                "fPP:numeroProcesso:origemProcesso": numero_processo[21:25],
-                "fPP:j_id148": "fPP:j_id148",
-                "javax.faces.ViewState": viewstate,
-            }
-            
-            resp = self._http.session.post(
-                f"{BASE_URL}/pje/Processo/ConsultaProcesso/listView.seam",
-                data=form_data,
-                timeout=self.timeout,
-                headers={
-                    "Content-Type": "application/x-www-form-urlencoded",
-                    "Origin": BASE_URL,
-                }
-            )
-            
-            if resp.status_code == 200:
-                # Tentar extrair o ID do processo da resposta
-                match = re.search(r'idProcesso["\']?\s*[:=]\s*["\']?(\d+)', resp.text)
-                if match:
-                    return int(match.group(1))
+            for tarefa in tarefas[:5]:  # Verificar nas primeiras 5 tarefas
+                if self._check_cancelado():
+                    return None
+                    
+                from urllib.parse import quote
+                resp = self._http.api_post(
+                    f"painelUsuario/recuperarProcessosTarefaPendenteComCriterios/{quote(tarefa.nome)}/false",
+                    {
+                        "numeroProcesso": numero_processo,
+                        "classe": None,
+                        "tags": [],
+                        "page": 0,
+                        "maxResults": 1,
+                        "competencia": ""
+                    }
+                )
                 
-                # Tentar outro padrão
-                match = re.search(r'Detalhe/listAutosDigitais\.seam\?idProcesso=(\d+)', resp.text)
-                if match:
-                    return int(match.group(1))
+                if resp.status_code == 200:
+                    data = resp.json()
+                    entities = data.get("entities", [])
+                    if entities:
+                        proc = entities[0]
+                        if proc.get("numeroProcesso") == numero_processo:
+                            self.logger.info(f"Processo encontrado na tarefa '{tarefa.nome}'")
+                            return proc.get("idProcesso", 0)
+            
+            # Tentar também nas favoritas
+            tarefas_fav = self._tasks.listar_tarefas_favoritas()
+            
+            for tarefa in tarefas_fav[:5]:
+                if self._check_cancelado():
+                    return None
+                    
+                from urllib.parse import quote
+                resp = self._http.api_post(
+                    f"painelUsuario/recuperarProcessosTarefaPendenteComCriterios/{quote(tarefa.nome)}/true",
+                    {
+                        "numeroProcesso": numero_processo,
+                        "classe": None,
+                        "tags": [],
+                        "page": 0,
+                        "maxResults": 1,
+                        "competencia": ""
+                    }
+                )
+                
+                if resp.status_code == 200:
+                    data = resp.json()
+                    entities = data.get("entities", [])
+                    if entities:
+                        proc = entities[0]
+                        if proc.get("numeroProcesso") == numero_processo:
+                            self.logger.info(f"Processo encontrado na tarefa favorita '{tarefa.nome}'")
+                            return proc.get("idProcesso", 0)
             
             return None
             
         except Exception as e:
             self.logger.error(f"Erro ao obter ID do processo: {e}")
+            return None
+    
+    def obter_id_processo_via_etiquetas(self, numero_processo: str) -> Optional[int]:
+        """
+        Tenta obter o ID do processo através das etiquetas.
+        """
+        try:
+            self.logger.debug(f"Buscando ID via etiquetas: {numero_processo}")
+            
+            # Buscar etiquetas do usuário
+            etiquetas = self._tags.buscar_etiquetas("")
+            
+            for etiqueta in etiquetas[:10]:  # Verificar nas primeiras 10 etiquetas
+                if self._check_cancelado():
+                    return None
+                    
+                processos = self._tags.listar_processos_etiqueta(etiqueta.id, limit=500)
+                
+                for proc in processos:
+                    if proc.numero_processo == numero_processo:
+                        self.logger.info(f"Processo encontrado na etiqueta '{etiqueta.nome}'")
+                        return proc.id_processo
+            
+            return None
+            
+        except Exception as e:
+            self.logger.error(f"Erro ao buscar via etiquetas: {e}")
             return None
     
     def processar_numeros_generator(
@@ -377,18 +488,6 @@ class PJEClient:
     ) -> Generator[Dict[str, Any], None, Dict[str, Any]]:
         """
         Processa uma lista de números de processos para download.
-        
-        Args:
-            numeros_processos: Lista de números de processos no formato CNJ
-            tipo_documento: Tipo de documento a baixar
-            aguardar_download: Se deve aguardar os downloads ficarem disponíveis
-            tempo_espera: Tempo máximo de espera em segundos
-        
-        Yields:
-            Dict com estado atual do processamento
-        
-        Returns:
-            Relatório final do processamento
         """
         self._reset_cancelamento()
         self._downloads.limpar_diagnosticos()
@@ -431,9 +530,11 @@ class PJEClient:
         relatorio["status"] = "processando"
         
         for i, numero in enumerate(numeros_processos, 1):
-            if self._cancelar:
+            # Verificar cancelamento no início de cada iteração
+            if self._check_cancelado():
+                self.logger.info("Processamento cancelado pelo usuario")
                 relatorio["status"] = "cancelado"
-                relatorio["erros"].append("Processamento cancelado")
+                relatorio["erros"].append("Processamento cancelado pelo usuario")
                 yield relatorio
                 return relatorio
             
@@ -442,26 +543,51 @@ class PJEClient:
             self.logger.info(f"[{i}/{total}] Processando {numero}")
             yield relatorio
             
+            # Verificar cancelamento antes de buscar
+            if self._check_cancelado():
+                relatorio["status"] = "cancelado"
+                relatorio["erros"].append("Processamento cancelado pelo usuario")
+                yield relatorio
+                return relatorio
+            
             # Tentar buscar informações do processo
             relatorio["status"] = "buscando_processo"
             yield relatorio
             
-            proc_info = self.buscar_processo_por_numero(numero)
+            id_processo = None
             
+            # Método 1: Busca via API
+            proc_info = self.buscar_processo_por_numero(numero)
             if proc_info and proc_info.get("id_processo"):
                 id_processo = proc_info["id_processo"]
-            else:
-                # Tentar método alternativo
-                id_processo = self.obter_id_processo_via_download(numero)
+                self.logger.info(f"ID encontrado via API: {id_processo}")
+            
+            # Método 2: Busca via painel de tarefas
+            if not id_processo and not self._check_cancelado():
+                id_processo = self.obter_id_processo_via_painel(numero)
+                if id_processo:
+                    self.logger.info(f"ID encontrado via painel: {id_processo}")
+            
+            # Método 3: Busca via etiquetas
+            if not id_processo and not self._check_cancelado():
+                id_processo = self.obter_id_processo_via_etiquetas(numero)
+                if id_processo:
+                    self.logger.info(f"ID encontrado via etiquetas: {id_processo}")
+            
+            # Verificar cancelamento após busca
+            if self._check_cancelado():
+                relatorio["status"] = "cancelado"
+                relatorio["erros"].append("Processamento cancelado pelo usuario")
+                yield relatorio
+                return relatorio
             
             if not id_processo:
-                # Último recurso: tentar solicitar download diretamente usando
-                # a chave de acesso gerada pelo número do processo
-                self.logger.warning(f"Nao foi possivel obter ID do processo {numero}, tentando download direto")
-                
-                # Tentar gerar uma chave de acesso fictícia baseada no número
-                # Na prática, vamos tentar usar 0 como ID e deixar o sistema tentar
-                id_processo = 0
+                self.logger.error(f"Nao foi possivel encontrar o processo: {numero}")
+                relatorio["falha"] += 1
+                relatorio["erros"].append(f"Processo nao encontrado: {numero}")
+                relatorio["status"] = "processando"
+                yield relatorio
+                continue
             
             processos_info[numero] = {
                 "id_processo": id_processo,
@@ -472,31 +598,34 @@ class PJEClient:
             yield relatorio
             
             # Solicitar download
-            if id_processo > 0:
-                sucesso, detalhes = self._downloads.solicitar_download(
-                    id_processo, numero, tipo_documento, diretorio_download=diretorio
-                )
-                
-                if sucesso:
-                    if detalhes.get("arquivo_baixado"):
-                        arquivo_path = Path(detalhes["arquivo_baixado"])
-                        if self._verificar_arquivo_valido(arquivo_path):
-                            relatorio["arquivos"].append(str(arquivo_path))
-                            relatorio["sucesso"] += 1
-                        else:
-                            processos_pendentes.append(numero)
+            sucesso, detalhes = self._downloads.solicitar_download(
+                id_processo, numero, tipo_documento, diretorio_download=diretorio
+            )
+            
+            if sucesso:
+                if detalhes.get("arquivo_baixado"):
+                    arquivo_path = Path(detalhes["arquivo_baixado"])
+                    if self._verificar_arquivo_valido(arquivo_path):
+                        relatorio["arquivos"].append(str(arquivo_path))
+                        relatorio["sucesso"] += 1
+                        self.logger.success(f"Download concluido: {numero}")
                     else:
                         processos_pendentes.append(numero)
                 else:
-                    relatorio["falha"] += 1
-                    relatorio["erros"].append(f"Falha ao solicitar download: {numero}")
+                    processos_pendentes.append(numero)
             else:
-                # Se não temos ID, marcar como falha
                 relatorio["falha"] += 1
-                relatorio["erros"].append(f"Processo nao encontrado: {numero}")
+                relatorio["erros"].append(f"Falha ao solicitar download: {numero}")
             
             yield relatorio
             time.sleep(2)
+        
+        # Verificar cancelamento antes de aguardar downloads
+        if self._check_cancelado():
+            relatorio["status"] = "cancelado"
+            relatorio["erros"].append("Processamento cancelado pelo usuario")
+            yield relatorio
+            return relatorio
         
         # Aguardar downloads pendentes
         if aguardar_download and processos_pendentes:
@@ -510,6 +639,13 @@ class PJEClient:
                     relatorio["arquivos"].append(arq)
                     relatorio["sucesso"] += 1
         
+        # Verificar cancelamento antes de verificar integridade
+        if self._check_cancelado():
+            relatorio["status"] = "cancelado"
+            relatorio["erros"].append("Processamento cancelado pelo usuario")
+            yield relatorio
+            return relatorio
+        
         # Verificar integridade
         relatorio["status"] = "verificando_integridade"
         relatorio["processo_atual"] = "Verificando arquivos"
@@ -522,7 +658,7 @@ class PJEClient:
         
         # Retries
         tentativa = 0
-        while processos_faltantes and tentativa < self.max_retries:
+        while processos_faltantes and tentativa < self.max_retries and not self._check_cancelado():
             tentativa += 1
             relatorio["retries"]["tentativas"] = tentativa
             relatorio["status"] = f"retry_{tentativa}"
@@ -533,7 +669,7 @@ class PJEClient:
             time.sleep(self.retry_delay)
             
             for num_proc in processos_faltantes[:]:
-                if self._cancelar:
+                if self._check_cancelado():
                     break
                 
                 if num_proc not in processos_info:
@@ -552,6 +688,9 @@ class PJEClient:
                 if sucesso:
                     relatorio["retries"]["processos_reprocessados"].append(num_proc)
                 time.sleep(3)
+            
+            if self._check_cancelado():
+                break
             
             time.sleep(15)
             arquivos_retry = self._baixar_pendentes_verificado(processos_faltantes, diretorio, tempo_espera=60)
@@ -573,7 +712,9 @@ class PJEClient:
         relatorio["falha"] = relatorio["processos"] - relatorio["sucesso"]
         relatorio["data_fim"] = datetime.now().isoformat()
         
-        if relatorio["integridade"] == "ok":
+        if self._check_cancelado():
+            relatorio["status"] = "cancelado"
+        elif relatorio["integridade"] == "ok":
             relatorio["status"] = "concluido"
         elif processos_faltantes:
             relatorio["status"] = "concluido_com_falhas"
@@ -637,6 +778,12 @@ class PJEClient:
             yield relatorio
             return relatorio
         
+        # Verificar cancelamento
+        if self._check_cancelado():
+            relatorio["status"] = "cancelado"
+            yield relatorio
+            return relatorio
+        
         relatorio["status"] = "buscando_tarefa"
         yield relatorio
         
@@ -644,6 +791,12 @@ class PJEClient:
         if not tarefa:
             relatorio["erros"].append("Tarefa nao encontrada")
             relatorio["status"] = "erro"
+            yield relatorio
+            return relatorio
+        
+        # Verificar cancelamento
+        if self._check_cancelado():
+            relatorio["status"] = "cancelado"
             yield relatorio
             return relatorio
         
@@ -669,9 +822,11 @@ class PJEClient:
         relatorio["status"] = "processando"
         
         for i, proc in enumerate(processos, 1):
-            if self._cancelar:
+            # Verificar cancelamento no início de cada iteração
+            if self._check_cancelado():
+                self.logger.info("Processamento cancelado pelo usuario")
                 relatorio["status"] = "cancelado"
-                relatorio["erros"].append("Processamento cancelado")
+                relatorio["erros"].append("Processamento cancelado pelo usuario")
                 yield relatorio
                 return relatorio
             
@@ -701,6 +856,12 @@ class PJEClient:
             time.sleep(2)
             
             if len(processos_pendentes) >= tamanho_lote:
+                # Verificar cancelamento antes do lote
+                if self._check_cancelado():
+                    relatorio["status"] = "cancelado"
+                    yield relatorio
+                    return relatorio
+                
                 relatorio["status"] = "baixando_lote"
                 yield relatorio
                 
@@ -713,6 +874,12 @@ class PJEClient:
                 relatorio["status"] = "processando"
                 yield relatorio
         
+        # Verificar cancelamento antes de aguardar downloads
+        if self._check_cancelado():
+            relatorio["status"] = "cancelado"
+            yield relatorio
+            return relatorio
+        
         if aguardar_download and processos_pendentes:
             relatorio["status"] = "aguardando_downloads"
             relatorio["processo_atual"] = f"Aguardando {len(processos_pendentes)} downloads"
@@ -724,6 +891,12 @@ class PJEClient:
                     relatorio["arquivos"].append(arq)
                     relatorio["sucesso"] += 1
         
+        # Verificar cancelamento antes de verificar integridade
+        if self._check_cancelado():
+            relatorio["status"] = "cancelado"
+            yield relatorio
+            return relatorio
+        
         relatorio["status"] = "verificando_integridade"
         relatorio["processo_atual"] = "Verificando arquivos"
         yield relatorio
@@ -733,7 +906,7 @@ class PJEClient:
         processos_faltantes = integridade["processos_faltantes"]
         tentativa = 0
         
-        while processos_faltantes and tentativa < self.max_retries:
+        while processos_faltantes and tentativa < self.max_retries and not self._check_cancelado():
             tentativa += 1
             relatorio["retries"]["tentativas"] = tentativa
             relatorio["status"] = f"retry_{tentativa}"
@@ -744,7 +917,7 @@ class PJEClient:
             time.sleep(self.retry_delay)
             
             for num_proc in processos_faltantes[:]:
-                if self._cancelar:
+                if self._check_cancelado():
                     break
                 if num_proc not in mapa_processos:
                     continue
@@ -758,6 +931,9 @@ class PJEClient:
                 if sucesso:
                     relatorio["retries"]["processos_reprocessados"].append(num_proc)
                 time.sleep(3)
+            
+            if self._check_cancelado():
+                break
             
             time.sleep(15)
             arquivos_retry = self._baixar_pendentes_verificado(processos_faltantes, diretorio, tempo_espera=60)
@@ -778,7 +954,9 @@ class PJEClient:
         relatorio["falha"] = relatorio["processos"] - relatorio["sucesso"]
         relatorio["data_fim"] = datetime.now().isoformat()
         
-        if relatorio["integridade"] == "ok":
+        if self._check_cancelado():
+            relatorio["status"] = "cancelado"
+        elif relatorio["integridade"] == "ok":
             relatorio["status"] = "concluido"
         elif processos_faltantes:
             relatorio["status"] = "concluido_com_falhas"
@@ -841,6 +1019,12 @@ class PJEClient:
             yield relatorio
             return relatorio
         
+        # Verificar cancelamento
+        if self._check_cancelado():
+            relatorio["status"] = "cancelado"
+            yield relatorio
+            return relatorio
+        
         relatorio["status"] = "buscando_etiqueta"
         yield relatorio
         
@@ -848,6 +1032,12 @@ class PJEClient:
         if not etiqueta:
             relatorio["erros"].append("Etiqueta nao encontrada")
             relatorio["status"] = "erro"
+            yield relatorio
+            return relatorio
+        
+        # Verificar cancelamento
+        if self._check_cancelado():
+            relatorio["status"] = "cancelado"
             yield relatorio
             return relatorio
         
@@ -873,9 +1063,11 @@ class PJEClient:
         relatorio["status"] = "processando"
         
         for i, proc in enumerate(processos, 1):
-            if self._cancelar:
+            # Verificar cancelamento no início de cada iteração
+            if self._check_cancelado():
+                self.logger.info("Processamento cancelado pelo usuario")
                 relatorio["status"] = "cancelado"
-                relatorio["erros"].append("Processamento cancelado")
+                relatorio["erros"].append("Processamento cancelado pelo usuario")
                 yield relatorio
                 return relatorio
             
@@ -905,6 +1097,12 @@ class PJEClient:
             time.sleep(2)
             
             if len(processos_pendentes) >= tamanho_lote:
+                # Verificar cancelamento antes do lote
+                if self._check_cancelado():
+                    relatorio["status"] = "cancelado"
+                    yield relatorio
+                    return relatorio
+                
                 relatorio["status"] = "baixando_lote"
                 yield relatorio
                 arquivos = self._baixar_pendentes_verificado(processos_pendentes, diretorio, tempo_espera=60)
@@ -916,6 +1114,12 @@ class PJEClient:
                 relatorio["status"] = "processando"
                 yield relatorio
         
+        # Verificar cancelamento antes de aguardar downloads
+        if self._check_cancelado():
+            relatorio["status"] = "cancelado"
+            yield relatorio
+            return relatorio
+        
         if aguardar_download and processos_pendentes:
             relatorio["status"] = "aguardando_downloads"
             relatorio["processo_atual"] = f"Aguardando {len(processos_pendentes)} downloads"
@@ -926,6 +1130,12 @@ class PJEClient:
                     relatorio["arquivos"].append(arq)
                     relatorio["sucesso"] += 1
         
+        # Verificar cancelamento antes de verificar integridade
+        if self._check_cancelado():
+            relatorio["status"] = "cancelado"
+            yield relatorio
+            return relatorio
+        
         relatorio["status"] = "verificando_integridade"
         relatorio["processo_atual"] = "Verificando arquivos"
         yield relatorio
@@ -935,7 +1145,7 @@ class PJEClient:
         processos_faltantes = integridade["processos_faltantes"]
         tentativa = 0
         
-        while processos_faltantes and tentativa < self.max_retries:
+        while processos_faltantes and tentativa < self.max_retries and not self._check_cancelado():
             tentativa += 1
             relatorio["retries"]["tentativas"] = tentativa
             relatorio["status"] = f"retry_{tentativa}"
@@ -946,7 +1156,7 @@ class PJEClient:
             time.sleep(self.retry_delay)
             
             for num_proc in processos_faltantes[:]:
-                if self._cancelar:
+                if self._check_cancelado():
                     break
                 if num_proc not in mapa_processos:
                     continue
@@ -960,6 +1170,9 @@ class PJEClient:
                 if sucesso:
                     relatorio["retries"]["processos_reprocessados"].append(num_proc)
                 time.sleep(3)
+            
+            if self._check_cancelado():
+                break
             
             time.sleep(15)
             arquivos_retry = self._baixar_pendentes_verificado(processos_faltantes, diretorio, tempo_espera=60)
@@ -980,7 +1193,9 @@ class PJEClient:
         relatorio["falha"] = relatorio["processos"] - relatorio["sucesso"]
         relatorio["data_fim"] = datetime.now().isoformat()
         
-        if relatorio["integridade"] == "ok":
+        if self._check_cancelado():
+            relatorio["status"] = "cancelado"
+        elif relatorio["integridade"] == "ok":
             relatorio["status"] = "concluido"
         elif processos_faltantes:
             relatorio["status"] = "concluido_com_falhas"

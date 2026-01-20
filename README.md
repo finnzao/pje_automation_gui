@@ -1,217 +1,150 @@
-# PJE Download Manager
+# PJE Download Manager v2.1
 
-Sistema de download automatico de processos do PJE-TJBA (Tribunal de Justica da Bahia).
+Sistema de download automatizado de processos do PJE-TJBA (Tribunal de Justiça da Bahia).
 
-## Indice
+## 📋 Resumo da Aplicação
 
-1. O que e
-2. Instalacao Rapida
-3. Como Usar
-4. Perguntas Frequentes
-5. Uso Avancado (Terminal)
-6. Solucao de Problemas
+O **PJE Download Manager** é uma ferramenta que automatiza o download em massa de processos judiciais do sistema PJE. A aplicação oferece:
 
-## O que e
+### Funcionalidades Principais
 
-O PJE Download Manager e uma ferramenta que automatiza o download de processos judiciais do PJE, permitindo:
+| Funcionalidade | Descrição |
+|----------------|-----------|
+| **Download por Tarefa** | Baixa todos os processos de uma tarefa específica (ex: "Minutar sentença") |
+| **Download por Etiqueta** | Baixa processos marcados com uma etiqueta específica (ex: "Urgente") |
+| **Download por Número** | Baixa processo(s) específico(s) informando o número CNJ |
+| **Interface Gráfica** | Interface web amigável via Streamlit |
+| **Linha de Comando** | Scripts CLI para automação avançada |
+| **Cancelamento** | Permite cancelar o processamento a qualquer momento |
+| **Verificação de Integridade** | Confirma se todos os arquivos foram baixados corretamente |
+| **Retries Automáticos** | Tenta novamente downloads que falharam |
 
-- Download em massa por Tarefa (ex: "Minutar sentenca")
-- Download em massa por Etiqueta (ex: processos marcados como "Urgente")
-- Interface grafica facil de usar
-- Acompanhamento em tempo real do progresso
-- Relatorios de execucao
+### Fluxo de Funcionamento
 
-## Instalacao Rapida
+```
+1. Login (CPF + Senha)
+      ↓
+2. Seleção de Perfil (Assessoria, Gabinete, etc.)
+      ↓
+3. Escolha do Tipo de Download:
+   ├── Por Tarefa → Lista tarefas → Seleciona → Baixa processos
+   ├── Por Etiqueta → Busca etiqueta → Seleciona → Baixa processos
+   └── Por Número → Informa número(s) → Baixa processo(s)
+      ↓
+4. Processamento (com barra de progresso)
+      ↓
+5. Resultado (relatório + arquivos baixados)
+```
 
-### Passo 1: Instalar Python
+### Arquitetura do Sistema
 
-Se voce ainda nao tem Python instalado:
+```
+pje_download_manager/
+├── app.py                      # Interface gráfica (Streamlit)
+├── downloadProcessByTask.py    # CLI - Download por tarefa
+├── downloadProcessByTag.py     # CLI - Download por etiqueta
+├── pje_lib/                    # Biblioteca de automação
+│   ├── client.py               # Cliente principal (PJEClient)
+│   ├── config.py               # Configurações (URLs, constantes)
+│   ├── models/                 # Modelos de dados
+│   │   └── __init__.py         # Usuario, Perfil, Tarefa, Processo, etc.
+│   ├── core/                   # Componentes fundamentais
+│   │   ├── http_client.py      # Cliente HTTP configurado
+│   │   └── session_manager.py  # Gerenciador de sessão/cookies
+│   ├── services/               # Serviços especializados
+│   │   ├── auth_service.py     # Autenticação SSO
+│   │   ├── task_service.py     # Gerenciamento de tarefas
+│   │   ├── tag_service.py      # Gerenciamento de etiquetas
+│   │   └── download_service.py # Download de processos
+│   └── utils/                  # Utilitários
+│       └── __init__.py         # Logger, helpers, etc.
+└── ui/                         # Interface
+    └── credential_manager.py   # Gerenciador de credenciais
+```
 
-1. Acesse python.org/downloads
-2. Baixe a versao 3.10 ou superior
-3. Durante a instalacao, marque a opcao "Add Python to PATH"
+## 🚀 Instalação
 
-### Passo 2: Baixar o Programa
+### Requisitos
+- Python 3.8 ou superior
+- Pip (gerenciador de pacotes)
 
-1. Baixe o arquivo ZIP do programa
-2. Extraia para uma pasta de sua preferencia (ex: C:\PJE-Download)
-
-### Passo 3: Instalar Dependencias
-
-Abra o Prompt de Comando (Windows) ou Terminal (Mac/Linux) na pasta do programa e execute:
+### Passos
 
 ```bash
+# 1. Clone ou baixe o projeto
+
+# 2. Instale as dependências
 pip install -r requirements.txt
+
+# 3. (Opcional) Configure credenciais no .env
+cp .env.example .env
+# Edite o arquivo .env com seu CPF e senha
 ```
 
-### Passo 4: Iniciar o Programa
+## 💻 Uso
 
-Execute o comando:
+### Interface Gráfica (Recomendado)
 
 ```bash
+# Iniciar a interface
 streamlit run app.py
+
+# Ou use o script de inicialização
+python iniciar.py
 ```
 
-O programa abrira automaticamente no seu navegador!
-
-## Como Usar
-
-### 1. Login
-
-1. Digite seu CPF (apenas numeros)
-2. Digite sua senha do PJE
-3. Opcionalmente, marque "Salvar login neste computador"
-4. Clique em Entrar
-
-### 2. Selecionar Perfil
-
-- Escolha o perfil que deseja usar (ex: Assessoria, Gabinete)
-- Clique no perfil desejado
-
-### 3. Escolher Tipo de Download
-
-- Download por Tarefa: Baixa processos de uma tarefa especifica
-- Download por Etiqueta: Baixa processos marcados com uma etiqueta
-
-### 4. Selecionar e Baixar
-
-Por Tarefa:
-1. Navegue pela lista de tarefas
-2. Use a busca para filtrar
-3. Clique em Baixar na tarefa desejada
-
-Por Etiqueta:
-1. Digite o nome da etiqueta
-2. Selecione a etiqueta encontrada
-3. Clique em Baixar
-
-### 5. Acompanhar Progresso
-
-- Veja o andamento em tempo real
-- Acompanhe qual processo esta sendo baixado
-- Visualize o log de execucao
-
-### 6. Resultado
-
-- Veja o resumo do processamento
-- Clique em Abrir Pasta de Downloads para ver os arquivos
-- Baixe o relatorio em JSON se desejar
-
-## Perguntas Frequentes
-
-### Onde ficam os arquivos baixados?
-
-Na pasta downloads dentro do diretorio do programa. Voce pode clicar em "Abrir Pasta de Downloads" para acessa-la diretamente.
-
-### Minhas credenciais sao seguras?
-
-Sim! Se voce marcar "Salvar login neste computador", suas credenciais sao:
-- Armazenadas localmente no seu computador
-- Criptografadas antes de serem salvas
-- Nunca enviadas para servidores externos
-
-### Posso processar todos os processos de uma vez?
-
-Sim, mas recomendamos processar em lotes menores (50-100 processos) para evitar problemas com o PJE.
-
-### O programa funciona em segundo plano?
-
-Nao. Mantenha a janela do navegador aberta durante o processamento.
-
-## Uso Avancado (Terminal)
-
-Para usuarios avancados, o programa tambem funciona via linha de comando:
-
-### Download por Tarefa
+### Linha de Comando
 
 ```bash
-# Baixar todos os processos de uma tarefa
-python downloadProcessByTask.py -t "Minutar sentenca"
+# Download por Tarefa
+python downloadProcessByTask.py -t "Minutar sentença" -p "Assessoria"
 
-# Com perfil especifico
-python downloadProcessByTask.py -t "Minutar sentenca" -p "Assessoria"
+# Download por Etiqueta
+python downloadProcessByTag.py -e "Urgente" --limite 10
 
-# Limitar quantidade
-python downloadProcessByTask.py -t "Minutar sentenca" --limite 10
-
-# Listar tarefas disponiveis
+# Listar tarefas disponíveis
 python downloadProcessByTask.py --listar-tarefas
-```
-
-### Download por Etiqueta
-
-```bash
-# Baixar processos de uma etiqueta
-python downloadProcessByTag.py -e "Felipe"
-
-# Buscar etiquetas
-python downloadProcessByTag.py --buscar-etiqueta "Fel"
 
 # Listar perfis
 python downloadProcessByTag.py --listar-perfis
 ```
 
-### Usando arquivo .env
+## 🔧 Correções na Versão 2.1
 
-Crie um arquivo .env na pasta do programa:
+### Download por Número
+- **Problema**: O sistema não conseguia encontrar o ID do processo via API
+- **Solução**: Implementados 3 métodos alternativos de busca:
+  1. Busca via API de consulta pública
+  2. Busca via painel de tarefas do usuário
+  3. Busca via etiquetas do usuário
 
-```
-PJE_USER=00000000000
-PJE_PASSWORD=sua_senha
-```
+### Cancelamento
+- **Problema**: Clicar em "Cancelar" não interrompia o processamento
+- **Solução**: Flag de cancelamento verificado em múltiplos pontos do loop:
+  - No início de cada iteração
+  - Antes e depois de cada operação de busca
+  - Durante a espera de downloads
+  - Durante os retries
 
-## Solucao de Problemas
+## ⚠️ Limitações Conhecidas
 
-### "Falha no login"
+1. **Download por Número**: O processo precisa estar acessível no perfil atual (em alguma tarefa ou etiqueta)
+2. **Processos Sigilosos**: Podem falhar se o usuário não tiver permissão
+3. **Rate Limiting**: O PJE pode temporariamente bloquear muitas requisições seguidas
 
-- Verifique se CPF e senha estao corretos
-- Tente fazer login diretamente no PJE para confirmar que as credenciais funcionam
-- Aguarde alguns minutos e tente novamente (pode ser rate limit)
+## 📁 Onde ficam os arquivos?
 
-### "Sessao expirada"
+- **Downloads**: `./downloads/` (organizado por tarefa/etiqueta/data)
+- **Logs**: `./.logs/` (logs de execução)
+- **Sessão**: `./.session/` (cookies para manter login)
+- **Configurações**: `./.config/` (credenciais salvas)
 
-- Faca login novamente
-- Se persistir, clique em "Usar outras credenciais" e faca novo login
+## 🔐 Segurança
 
-### "Nenhuma tarefa encontrada"
+- Credenciais são criptografadas localmente
+- Sessão é armazenada apenas no computador local
+- Nenhum dado é enviado para servidores externos
 
-- Verifique se o perfil selecionado esta correto
-- Algumas tarefas so aparecem para perfis especificos
+## 📄 Licença
 
-### "Erro ao baixar processo"
-
-- Pode ser um processo sigiloso ou com acesso restrito
-- O sistema continuara com os proximos processos
-
-### O programa nao abre
-
-1. Verifique se o Python esta instalado: python --version
-2. Verifique se as dependencias estao instaladas: pip list
-3. Tente reinstalar: pip install -r requirements.txt --force-reinstall
-
-## Estrutura de Arquivos
-
-```
-pje_download_manager/
-  app.py                      # Interface grafica (Streamlit)
-  downloadProcessByTask.py    # Script CLI - Download por tarefa
-  downloadProcessByTag.py     # Script CLI - Download por etiqueta
-  requirements.txt            # Dependencias Python
-  .env.example                # Exemplo de configuracao
-  README.md                   # Este arquivo
-  pje_lib/                    # Biblioteca de automacao
-    __init__.py
-    client.py                 # Cliente principal
-    config.py                 # Configuracoes
-    models/                   # Modelos de dados
-    core/                     # Componentes fundamentais
-    services/                 # Servicos (auth, task, tag, download)
-    utils/                    # Utilitarios
-  ui/                         # Interface
-    __init__.py
-    credential_manager.py     # Gerenciador de credenciais
-  downloads/                  # Pasta de downloads (criada automaticamente)
-  .config/                    # Configuracoes locais (criada automaticamente)
-  .session/                   # Dados de sessao (criada automaticamente)
-  .logs/                      # Logs de execucao (criada automaticamente)
-```
+Uso interno - Tribunal de Justiça da Bahia

@@ -24,7 +24,7 @@ from .models import (
     DiagnosticoDownload,
 )
 
-__version__ = "2.0.0"
+__version__ = "2.1.0"
 __all__ = [
     "PJEClient",
     "BASE_URL", "SSO_URL", "API_BASE", "TIPO_DOCUMENTO_VALUES",

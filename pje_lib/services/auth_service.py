@@ -212,11 +212,7 @@ class AuthService:
         return nome.strip()
     
     def _extrair_perfil_favorito_do_header(self, html: str) -> Optional[Perfil]:
-        """
-        Extrai o perfil favorito que aparece no HEADER da tabela.
-        """
         try:
-            # Buscar o header da tabela de perfis
             thead_pattern = r'<thead[^>]*class="rich-table-thead"[^>]*>.*?</thead>'
             thead_match = re.search(thead_pattern, html, re.IGNORECASE | re.DOTALL)
             
@@ -253,9 +249,6 @@ class AuthService:
             return None
     
     def _extrair_perfis_da_pagina(self, html: str) -> List[Perfil]:
-        """
-        Extrai perfis do HTML de uma pagina.
-        """
         perfis = []
         
         perfil_favorito = self._extrair_perfil_favorito_do_header(html)
@@ -286,7 +279,6 @@ class AuthService:
         return perfis
     
     def _tem_paginacao_visivel(self, html: str) -> bool:
-        """Verifica se o DataScroller de perfis esta visivel."""
         scroller_pattern = r'id="[^"]*scPerfil"[^>]*style="[^"]*"'
         match = re.search(scroller_pattern, html)
         
@@ -301,7 +293,6 @@ class AuthService:
         return True
     
     def _extrair_info_paginacao(self, html: str) -> dict:
-        """Extrai informacoes de paginacao do HTML."""
         info = {
             "pagina_atual": 1,
             "total_paginas": 1,
@@ -334,7 +325,6 @@ class AuthService:
         return info
     
     def _navegar_pagina_perfis(self, pagina: int, html_anterior: str) -> Optional[str]:
-        """Navega para uma pagina especifica de perfis via requisicao AJAX."""
         viewstate = extrair_viewstate(html_anterior)
         if not viewstate:
             viewstate = "j_id1"
@@ -380,7 +370,6 @@ class AuthService:
         return None
     
     def listar_perfis(self) -> List[Perfil]:
-        """Lista TODOS os perfis disponiveis, incluindo o perfil favorito."""
         if not self.ensure_logged_in():
             return []
         
@@ -469,9 +458,6 @@ class AuthService:
         return []
     
     def select_profile_by_index(self, profile_index: int) -> bool:
-        """
-        Seleciona perfil pelo indice.
-        """
         if not self.ensure_logged_in():
             return False
         try:
@@ -515,7 +501,6 @@ class AuthService:
             return False
     
     def select_profile(self, nome_perfil: str) -> bool:
-        """Seleciona perfil pelo nome."""
         if not self.perfis_disponiveis:
             self.listar_perfis()
         

@@ -51,6 +51,7 @@ def init_session_state():
         'pje_client': None,
         'relatorio': None,
         'download_dir': './downloads',
+        'cancelamento_solicitado': False,
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -104,9 +105,7 @@ def get_status_text(status: str) -> str:
 
 
 def limpar_sessao_e_config():
-    """Limpa completamente as pastas .config e .session"""
     pastas_para_limpar = ['.config', '.session']
-    
     for pasta in pastas_para_limpar:
         pasta_path = Path(pasta)
         if pasta_path.exists():
@@ -114,61 +113,33 @@ def limpar_sessao_e_config():
                 shutil.rmtree(pasta_path)
             except Exception as e:
                 st.warning(f"Nao foi possivel limpar {pasta}: {e}")
-    
-    # Recriar as pastas vazias
     for pasta in pastas_para_limpar:
         Path(pasta).mkdir(parents=True, exist_ok=True)
 
 
 def do_logout(limpar_tudo: bool = False):
-    """
-    Realiza logout do sistema.
-    
-    Args:
-        limpar_tudo: Se True, limpa também .config e .session
-    """
     if st.session_state.pje_client:
         try:
             st.session_state.pje_client.close()
         except:
             pass
-    
     if limpar_tudo:
         limpar_sessao_e_config()
-    
     for key in list(st.session_state.keys()):
         del st.session_state[key]
-    
     st.rerun()
 
 
 def validar_numero_processo(numero: str) -> bool:
-    """
-    Valida se o número do processo está no formato correto.
-    Formato: NNNNNNN-DD.AAAA.J.TR.OOOO
-    Exemplo: 0000001-23.2024.8.05.0001
-    """
-    # Remove espaços
     numero = numero.strip()
-    
-    # Padrão CNJ
     padrao = r'^\d{7}-\d{2}\.\d{4}\.\d\.\d{2}\.\d{4}$'
     return bool(re.match(padrao, numero))
 
 
 def formatar_numero_processo(numero: str) -> Optional[str]:
-    """
-    Tenta formatar um número de processo para o padrão CNJ.
-    Aceita entrada com ou sem formatação.
-    """
-    # Remove tudo que não é número
     apenas_numeros = re.sub(r'[^\d]', '', numero)
-    
-    # Deve ter 20 dígitos
     if len(apenas_numeros) != 20:
         return None
-    
-    # Formata no padrão CNJ
     return f"{apenas_numeros[:7]}-{apenas_numeros[7:9]}.{apenas_numeros[9:13]}.{apenas_numeros[13]}.{apenas_numeros[14:16]}.{apenas_numeros[16:20]}"
 
 
@@ -256,24 +227,12 @@ def page_select_profile():
     
     st.info(f"{len(perfis)} perfil(is) disponivel(is)")
     
-    busca_perfil = st.text_input(
-        "Buscar perfil", 
-        placeholder="Digite para filtrar...",
-        help="Filtre perfis por nome, orgao ou cargo"
-    )
+    busca_perfil = st.text_input("Buscar perfil", placeholder="Digite para filtrar...")
     
     if busca_perfil:
-        perfis_filtrados = [
-            p for p in perfis 
-            if busca_perfil.lower() in p.nome_completo.lower()
-        ]
+        perfis_filtrados = [p for p in perfis if busca_perfil.lower() in p.nome_completo.lower()]
     else:
         perfis_filtrados = perfis
-    
-    if busca_perfil and not perfis_filtrados:
-        st.warning(f"Nenhum perfil encontrado para: '{busca_perfil}'")
-    elif busca_perfil:
-        st.caption(f"Mostrando {len(perfis_filtrados)} de {len(perfis)} perfis")
     
     st.markdown("---")
     
@@ -286,7 +245,6 @@ def page_select_profile():
                     nome_display += f" - {perfil.orgao}"
                 if perfil.cargo:
                     nome_display += f" ({perfil.cargo})"
-                # Indicar se é favorito
                 if hasattr(perfil, 'favorito') and perfil.favorito:
                     nome_display += " ⭐"
                 st.markdown(nome_display)
@@ -342,7 +300,6 @@ def page_main_menu():
     c1, c2, c3 = st.columns(3)
     with c1:
         if st.button("Trocar Perfil", use_container_width=True):
-            # Limpar caches ao trocar de perfil
             st.session_state.tarefas = []
             st.session_state.tarefas_favoritas = []
             st.session_state.page = 'select_profile'
@@ -388,22 +345,12 @@ def page_download_by_task():
     
     if not tarefas:
         st.warning("Nenhuma tarefa encontrada para este perfil.")
-        st.info("💡 Dica: Tente clicar em 'Atualizar Tarefas' na barra lateral ou verifique se o perfil selecionado possui tarefas pendentes.")
-        if st.button("Atualizar"):
-            st.session_state.tarefas = []
-            st.session_state.tarefas_favoritas = []
-            st.rerun()
         return
     
     st.caption(f"{len(tarefas)} tarefa(s)")
     
     busca = st.text_input("Buscar", placeholder="Filtrar tarefas...")
-    
     tarefas_filtradas = [t for t in tarefas if busca.lower() in t.nome.lower()] if busca else tarefas
-    
-    if not tarefas_filtradas:
-        st.warning(f"Nenhuma tarefa encontrada para: '{busca}'")
-        return
     
     st.markdown("---")
     
@@ -420,6 +367,7 @@ def page_download_by_task():
                     st.session_state.task_limit = limite if limite > 0 else None
                     st.session_state.task_usar_favoritas = usar_favoritas
                     st.session_state.task_tamanho_lote = tamanho_lote
+                    st.session_state.cancelamento_solicitado = False
                     st.session_state.page = 'processing_task'
                     st.rerun()
 
@@ -444,7 +392,6 @@ def page_download_by_tag():
         with st.spinner("Buscando etiquetas..."):
             etiquetas = pje.buscar_etiquetas(busca)
         
-        # Remover duplicatas mantendo a primeira ocorrência
         etiquetas_unicas = []
         ids_vistos = set()
         for et in etiquetas:
@@ -461,29 +408,23 @@ def page_download_by_tag():
                 with st.container():
                     col1, col2 = st.columns([4, 1])
                     with col1:
-                        nome_display = f"**{etiqueta.nome}**"
-                        if etiqueta.nome_completo and etiqueta.nome_completo != etiqueta.nome:
-                            nome_display += f" ({etiqueta.nome_completo})"
-                        st.markdown(nome_display)
+                        st.markdown(f"**{etiqueta.nome}**")
                     with col2:
                         if st.button("Baixar", key=f"etiqueta_dl_{idx}_{etiqueta.id}"):
                             st.session_state.selected_tag = etiqueta
                             st.session_state.tag_limit = limite if limite > 0 else None
                             st.session_state.tag_tamanho_lote = tamanho_lote
+                            st.session_state.cancelamento_solicitado = False
                             st.session_state.page = 'processing_tag'
                             st.rerun()
         else:
             st.warning(f"Nenhuma etiqueta encontrada para: '{busca}'")
-            st.info("💡 Dica: Verifique se a etiqueta existe no perfil selecionado.")
     else:
         st.info("Digite o nome da etiqueta para buscar")
 
 
 def page_download_by_number():
-    """Página para download por número de processo"""
     st.title("Download por Número de Processo")
-    
-    pje = get_pje_client()
     
     with st.sidebar:
         st.subheader("Opcoes")
@@ -505,24 +446,21 @@ def page_download_by_number():
     - Com formatação: `0000001-23.2024.8.05.0001`
     - Sem formatação: `00000012320248050001`
     
-    Para múltiplos processos, digite um por linha.
+    **Importante:** O processo deve estar acessível no seu perfil atual (em alguma tarefa ou etiqueta).
     """)
     
-    # Área de texto para múltiplos processos
     numeros_input = st.text_area(
         "Número(s) do(s) processo(s)",
         placeholder="0000001-23.2024.8.05.0001\n0000002-45.2024.8.05.0001",
         height=150
     )
     
-    # Processar entrada
     if numeros_input:
         linhas = [l.strip() for l in numeros_input.strip().split('\n') if l.strip()]
         processos_validos = []
         processos_invalidos = []
         
         for linha in linhas:
-            # Tentar formatar
             numero_formatado = formatar_numero_processo(linha)
             if numero_formatado:
                 processos_validos.append(numero_formatado)
@@ -531,10 +469,8 @@ def page_download_by_number():
             else:
                 processos_invalidos.append(linha)
         
-        # Remover duplicatas mantendo ordem
         processos_validos = list(dict.fromkeys(processos_validos))
         
-        # Mostrar resumo
         col1, col2 = st.columns(2)
         with col1:
             if processos_validos:
@@ -543,13 +479,6 @@ def page_download_by_number():
             if processos_invalidos:
                 st.error(f"✗ {len(processos_invalidos)} processo(s) inválido(s)")
         
-        # Mostrar processos inválidos
-        if processos_invalidos:
-            with st.expander("Ver processos inválidos"):
-                for p in processos_invalidos:
-                    st.code(p)
-        
-        # Mostrar processos válidos
         if processos_validos:
             with st.expander("Ver processos válidos", expanded=True):
                 for p in processos_validos:
@@ -557,10 +486,10 @@ def page_download_by_number():
             
             st.divider()
             
-            # Botão para iniciar download
             if st.button("Baixar Processo(s)", type="primary", use_container_width=True):
                 st.session_state.processos_para_baixar = processos_validos
                 st.session_state.tipo_documento_numero = tipo_documento
+                st.session_state.cancelamento_solicitado = False
                 st.session_state.page = 'processing_number'
                 st.rerun()
     else:
@@ -568,7 +497,6 @@ def page_download_by_number():
 
 
 def page_processing_number():
-    """Página de processamento para download por número"""
     processos = st.session_state.get('processos_para_baixar', [])
     tipo_documento = st.session_state.get('tipo_documento_numero', 'Selecione')
     
@@ -592,13 +520,18 @@ def page_processing_number():
     
     st.divider()
     
+    cancel_message = st.empty()
+    
     cancel_col = st.columns([1, 1, 1])[1]
     with cancel_col:
-        if st.button("Cancelar", use_container_width=True, key="cancel_btn_number"):
-            pje = get_pje_client()
-            pje.cancelar_processamento()
+        cancel_clicked = st.button("Cancelar", use_container_width=True, key="cancel_btn_number", type="secondary")
     
     pje = get_pje_client()
+    
+    if cancel_clicked or st.session_state.get('cancelamento_solicitado', False):
+        st.session_state.cancelamento_solicitado = True
+        pje.cancelar_processamento()
+        cancel_message.warning("⚠️ Cancelamento solicitado. Aguarde...")
     
     try:
         generator = pje.processar_numeros_generator(
@@ -627,6 +560,7 @@ def page_processing_number():
             
             if status in ['concluido', 'concluido_com_falhas', 'cancelado', 'erro']:
                 st.session_state.relatorio = estado
+                st.session_state.cancelamento_solicitado = False
                 time.sleep(0.5)
                 st.session_state.page = 'result'
                 st.rerun()
@@ -635,6 +569,7 @@ def page_processing_number():
     except Exception as e:
         st.error(f"Erro: {str(e)}")
         if st.button("Voltar"):
+            st.session_state.cancelamento_solicitado = False
             st.session_state.page = 'download_by_number'
             st.rerun()
 
@@ -665,13 +600,18 @@ def page_processing_task():
     
     st.divider()
     
+    cancel_message = st.empty()
+    
     cancel_col = st.columns([1, 1, 1])[1]
     with cancel_col:
-        if st.button("Cancelar", use_container_width=True, key="cancel_btn"):
-            pje = get_pje_client()
-            pje.cancelar_processamento()
+        cancel_clicked = st.button("Cancelar", use_container_width=True, key="cancel_btn", type="secondary")
     
     pje = get_pje_client()
+    
+    if cancel_clicked or st.session_state.get('cancelamento_solicitado', False):
+        st.session_state.cancelamento_solicitado = True
+        pje.cancelar_processamento()
+        cancel_message.warning("⚠️ Cancelamento solicitado. Aguarde...")
     
     try:
         generator = pje.processar_tarefa_generator(
@@ -702,6 +642,7 @@ def page_processing_task():
             
             if status in ['concluido', 'concluido_com_falhas', 'cancelado', 'erro']:
                 st.session_state.relatorio = estado
+                st.session_state.cancelamento_solicitado = False
                 time.sleep(0.5)
                 st.session_state.page = 'result'
                 st.rerun()
@@ -710,6 +651,7 @@ def page_processing_task():
     except Exception as e:
         st.error(f"Erro: {str(e)}")
         if st.button("Voltar"):
+            st.session_state.cancelamento_solicitado = False
             st.session_state.page = 'download_by_task'
             st.rerun()
 
@@ -739,13 +681,18 @@ def page_processing_tag():
     
     st.divider()
     
+    cancel_message = st.empty()
+    
     cancel_col = st.columns([1, 1, 1])[1]
     with cancel_col:
-        if st.button("Cancelar", use_container_width=True, key="cancel_btn_tag"):
-            pje = get_pje_client()
-            pje.cancelar_processamento()
+        cancel_clicked = st.button("Cancelar", use_container_width=True, key="cancel_btn_tag", type="secondary")
     
     pje = get_pje_client()
+    
+    if cancel_clicked or st.session_state.get('cancelamento_solicitado', False):
+        st.session_state.cancelamento_solicitado = True
+        pje.cancelar_processamento()
+        cancel_message.warning("⚠️ Cancelamento solicitado. Aguarde...")
     
     try:
         generator = pje.processar_etiqueta_generator(
@@ -775,6 +722,7 @@ def page_processing_tag():
             
             if status in ['concluido', 'concluido_com_falhas', 'cancelado', 'erro']:
                 st.session_state.relatorio = estado
+                st.session_state.cancelamento_solicitado = False
                 time.sleep(0.5)
                 st.session_state.page = 'result'
                 st.rerun()
@@ -783,6 +731,7 @@ def page_processing_tag():
     except Exception as e:
         st.error(f"Erro: {str(e)}")
         if st.button("Voltar"):
+            st.session_state.cancelamento_solicitado = False
             st.session_state.page = 'download_by_tag'
             st.rerun()
 
@@ -792,11 +741,11 @@ def page_result():
     status = relatorio.get('status', 'concluido')
     
     if status == 'concluido':
-        st.title("Concluido")
+        st.title("✅ Concluido")
     elif status == 'concluido_com_falhas':
-        st.title("Concluido com falhas")
+        st.title("⚠️ Concluido com falhas")
     elif status == 'cancelado':
-        st.title("Cancelado")
+        st.title("🚫 Cancelado")
     else:
         st.title("Resultado")
     
@@ -815,9 +764,11 @@ def page_result():
         falhas_count = len(retries.get('processos_falha_definitiva', []))
         st.warning(f"Integridade: Inconsistente - {falhas_count} arquivo(s) faltando")
     
-    if retries.get('tentativas', 0) > 0:
-        reprocessados = len(retries.get('processos_reprocessados', []))
-        st.info(f"Retries: {retries['tentativas']} tentativa(s), {reprocessados} reprocessado(s)")
+    erros = relatorio.get('erros', [])
+    if erros:
+        with st.expander(f"Erros ({len(erros)})", expanded=False):
+            for erro in erros:
+                st.error(erro)
     
     st.divider()
     
