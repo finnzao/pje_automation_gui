@@ -23,6 +23,7 @@ class AuthService:
         self.session_manager = session_manager
         self.logger = get_logger()
         self.perfis_disponiveis: List[Perfil] = []
+        self.sessao_corrompida_detectada = False
     
     @property
     def usuario(self) -> Optional[Usuario]:
@@ -31,6 +32,19 @@ class AuthService:
     @usuario.setter
     def usuario(self, value: Usuario):
         self.client.usuario = value
+    
+    def marcar_sessao_corrompida(self):
+        """Marca que foi detectada sessao corrompida."""
+        self.sessao_corrompida_detectada = True
+        self.logger.warning("Sessao marcada como corrompida")
+    
+    def tem_sessao_corrompida(self) -> bool:
+        """Verifica se sessao foi marcada como corrompida."""
+        return self.sessao_corrompida_detectada
+    
+    def limpar_flag_corrompida(self):
+        """Limpa flag de sessao corrompida."""
+        self.sessao_corrompida_detectada = False
     
     def verificar_sessao_ativa(self) -> bool:
         """Verifica se ha sessao ativa no servidor."""
@@ -174,6 +188,7 @@ class AuthService:
             if self.verificar_sessao_ativa():
                 self.logger.success(f"Login OK: {self.usuario.nome}")
                 self.session_manager.save_session(self.client.session)
+                self.limpar_flag_corrompida()
                 return True
             else:
                 self.logger.error("Falha na verificacao pos-login")
@@ -197,6 +212,7 @@ class AuthService:
         """
         if not self.usuario:
             self.logger.warning("Sessao sem usuario")
+            self.marcar_sessao_corrompida()
             return False
         
         try:
@@ -210,11 +226,13 @@ class AuthService:
             
             if resp.status_code != 200:
                 self.logger.warning(f"currentUser retornou {resp.status_code}")
+                self.marcar_sessao_corrompida()
                 return False
             
             user_data = resp.json()
             if not user_data.get("idUsuario"):
                 self.logger.warning("currentUser sem ID")
+                self.marcar_sessao_corrompida()
                 return False
             
             # Teste 2: Tentar listar tarefas
@@ -235,6 +253,7 @@ class AuthService:
             
             if not (tarefas_ok or etiquetas_ok):
                 self.logger.warning("Nenhum endpoint de dados funcionou")
+                self.marcar_sessao_corrompida()
                 return False
             
             # Verificar se retornou estrutura valida
@@ -242,19 +261,23 @@ class AuthService:
                 tarefas = resp_tarefas.json()
                 if not isinstance(tarefas, list):
                     self.logger.warning("Tarefas retornou estrutura invalida")
+                    self.marcar_sessao_corrompida()
                     return False
             
             if etiquetas_ok:
                 etiquetas_data = resp_etiquetas.json()
                 if not isinstance(etiquetas_data, dict):
                     self.logger.warning("Etiquetas retornou estrutura invalida")
+                    self.marcar_sessao_corrompida()
                     return False
             
-            self.logger.info("✓ Sessao validada com sucesso")
+            self.logger.info("Sessao validada com sucesso")
+            self.limpar_flag_corrompida()
             return True
             
         except Exception as e:
             self.logger.error(f"Erro ao validar saude da sessao: {e}")
+            self.marcar_sessao_corrompida()
             return False
     
     def forcar_reset_sessao(self) -> bool:
@@ -266,7 +289,7 @@ class AuthService:
         - Apaga arquivos de config
         - Reinicializa estado
         """
-        self.logger.warning("🔄 Forcando reset completo da sessao")
+        self.logger.warning("Forcando reset completo da sessao")
         
         try:
             # 1. Limpar cookies
@@ -280,7 +303,7 @@ class AuthService:
             if config_dir.exists():
                 try:
                     shutil.rmtree(config_dir)
-                    self.logger.info("✓ Diretorio .config removido")
+                    self.logger.info("Diretorio .config removido")
                 except Exception as e:
                     self.logger.warning(f"Erro ao remover .config: {e}")
             
@@ -290,8 +313,9 @@ class AuthService:
             # 4. Resetar estado interno
             self.usuario = None
             self.perfis_disponiveis = []
+            self.limpar_flag_corrompida()
             
-            self.logger.success("✓ Reset completo concluido")
+            self.logger.success("Reset completo concluido")
             return True
             
         except Exception as e:
@@ -335,7 +359,7 @@ class AuthService:
                 return True
             
             # Sessao corrompida detectada
-            self.logger.error("❌ Sessao corrompida detectada!")
+            self.logger.error("Sessao corrompida detectada!")
             
             if tentativa < max_tentativas:
                 self.logger.warning(f"Tentando novamente ({tentativa + 1}/{max_tentativas})")
@@ -343,6 +367,7 @@ class AuthService:
                 force = True
             else:
                 self.logger.error("Numero maximo de tentativas atingido")
+                self.marcar_sessao_corrompida()
                 return False
         
         return False
@@ -358,6 +383,7 @@ class AuthService:
             
             # Sessao corrompida, forcar reset
             self.logger.warning("Sessao existente esta corrompida")
+            self.marcar_sessao_corrompida()
             self.forcar_reset_sessao()
         
         # Fazer login com validacao
@@ -560,6 +586,7 @@ class AuthService:
             
             if resp.status_code != 200:
                 self.logger.error(f"Erro ao acessar pagina de perfis: {resp.status_code}")
+                self.marcar_sessao_corrompida()
                 return []
             
             html = resp.text
@@ -618,6 +645,11 @@ class AuthService:
             
             self.perfis_disponiveis = todos_perfis
             
+            if not todos_perfis:
+                self.logger.warning("Nenhum perfil encontrado - possivel sessao corrompida")
+                self.marcar_sessao_corrompida()
+                return []
+            
             favoritos = [p for p in todos_perfis if p.favorito]
             if favoritos:
                 self.logger.info(f"Perfil(is) favorito(s): {[p.nome_completo for p in favoritos]}")
@@ -627,6 +659,7 @@ class AuthService:
             
         except Exception as e:
             self.logger.error(f"Erro ao listar perfis: {e}")
+            self.marcar_sessao_corrompida()
             import traceback
             self.logger.error(traceback.format_exc())
         
