@@ -2,7 +2,7 @@ import streamlit as st
 
 st.set_page_config(
     page_title="PJE Download Manager",
-    page_icon="",
+    page_icon="⚖️",
     layout="wide",
     initial_sidebar_state="collapsed"
 )
@@ -52,6 +52,7 @@ def init_session_state():
         'relatorio': None,
         'download_dir': './downloads',
         'cancelamento_solicitado': False,
+        'show_cancel_confirm': False,
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -96,8 +97,8 @@ def get_status_text(status: str) -> str:
         "verificando_integridade": "Verificando integridade...",
         "retry_1": "Retry 1/2...",
         "retry_2": "Retry 2/2...",
-        "concluido": "Concluido",
-        "concluido_com_falhas": "Concluido com falhas",
+        "concluido": "Concluído",
+        "concluido_com_falhas": "Concluído com falhas",
         "cancelado": "Cancelado",
         "erro": "Erro"
     }
@@ -112,21 +113,32 @@ def limpar_sessao_e_config():
             try:
                 shutil.rmtree(pasta_path)
             except Exception as e:
-                st.warning(f"Nao foi possivel limpar {pasta}: {e}")
+                st.warning(f"Não foi possível limpar {pasta}: {e}")
     for pasta in pastas_para_limpar:
         Path(pasta).mkdir(parents=True, exist_ok=True)
 
 
-def do_logout(limpar_tudo: bool = False):
+def do_logout(limpar_tudo: bool = False, forcar: bool = False):
     if st.session_state.pje_client:
         try:
             st.session_state.pje_client.close()
         except:
             pass
-    if limpar_tudo:
-        limpar_sessao_e_config()
+    
+    if limpar_tudo or forcar:
+        with st.spinner("Limpando sessão..."):
+            limpar_sessao_e_config()
+            
+            if st.session_state.pje_client:
+                try:
+                    if hasattr(st.session_state.pje_client, '_auth'):
+                        st.session_state.pje_client._auth.forcar_reset_sessao()
+                except:
+                    pass
+    
     for key in list(st.session_state.keys()):
         del st.session_state[key]
+    
     st.rerun()
 
 
@@ -155,7 +167,7 @@ def page_login():
     
     with col2:
         if has_saved:
-            st.info(f"Usuario salvo: {saved_user}")
+            st.info(f"Usuário salvo: {saved_user}")
             c1, c2 = st.columns(2)
             with c1:
                 if st.button("Entrar", use_container_width=True, type="primary"):
@@ -184,48 +196,73 @@ def do_login(username: str, password: str):
     with st.spinner("Conectando..."):
         try:
             pje = get_pje_client()
-            if pje.login(username, password):
+            if pje.login(username, password, validar_saude=True):
                 st.session_state.logged_in = True
                 st.session_state.user_name = pje.usuario.nome if pje.usuario else username
                 st.session_state.page = 'select_profile'
                 st.rerun()
             else:
-                st.error("Falha no login")
+                st.error("Falha no login. Verifique suas credenciais.")
         except Exception as e:
             st.error(f"Erro: {str(e)}")
 
 
 def page_select_profile():
     st.title("Selecionar Perfil")
-    st.caption(f"Usuario: {st.session_state.user_name}")
+    st.caption(f"Usuário: {st.session_state.user_name}")
     
     pje = get_pje_client()
     
-    col_reload, col_spacer = st.columns([1, 4])
+    if not pje.ensure_logged_in():
+        st.error("❌ Sessão inválida detectada. Fazendo login novamente...")
+        time.sleep(2)
+        do_logout(limpar_tudo=True)
+        return
+    
+    col_reload, col_health, col_spacer = st.columns([1, 1, 3])
+    
     with col_reload:
-        if st.button("Atualizar", help="Recarregar lista de perfis"):
+        if st.button("🔄 Atualizar", help="Recarregar lista de perfis"):
             st.session_state.perfis = []
             st.rerun()
+    
+    with col_health:
+        if st.button("🩺 Verificar Sessão", help="Verificar saúde da sessão"):
+            with st.spinner("Verificando..."):
+                if hasattr(pje._auth, 'validar_saude_sessao'):
+                    saudavel = pje._auth.validar_saude_sessao()
+                    if saudavel:
+                        st.success("✅ Sessão OK")
+                    else:
+                        st.error("❌ Sessão corrompida - Resetando...")
+                        time.sleep(2)
+                        do_logout(limpar_tudo=True)
+                        return
+                else:
+                    st.info("Verificação não disponível nesta versão")
     
     if not st.session_state.perfis:
         with st.spinner("Carregando perfis..."):
             st.session_state.perfis = pje.listar_perfis()
+            
+            if not st.session_state.perfis:
+                st.error("⚠️ Nenhum perfil encontrado. Isso pode indicar sessão corrompida.")
+                
+                col1, col2 = st.columns(2)
+                with col1:
+                    if st.button("🔄 Resetar e Tentar Novamente", type="primary", use_container_width=True):
+                        do_logout(limpar_tudo=True, forcar=True)
+                        return
+                
+                with col2:
+                    if st.button("Sair", use_container_width=True):
+                        do_logout(limpar_tudo=True)
+                
+                return
     
     perfis = st.session_state.perfis
     
-    if not perfis:
-        st.warning("Nenhum perfil encontrado")
-        col1, col2 = st.columns(2)
-        with col1:
-            if st.button("Tentar novamente", use_container_width=True):
-                st.session_state.perfis = []
-                st.rerun()
-        with col2:
-            if st.button("Sair", use_container_width=True):
-                do_logout(limpar_tudo=True)
-        return
-    
-    st.info(f"{len(perfis)} perfil(is) disponivel(is)")
+    st.info(f"{len(perfis)} perfil(is) disponível(is)")
     
     busca_perfil = st.text_input("Buscar perfil", placeholder="Digite para filtrar...")
     
@@ -268,7 +305,18 @@ def page_select_profile():
 def page_main_menu():
     perfil = st.session_state.perfil_selecionado
     st.title("Menu Principal")
-    st.caption(f"{st.session_state.user_name} | {perfil.nome if perfil else '-'}")
+    
+    pje = get_pje_client()
+    
+    col_status, col_user = st.columns([1, 4])
+    
+    with col_status:
+        status_icon = "🟢"
+        st.markdown(f"### {status_icon}")
+    
+    with col_user:
+        st.caption(f"**{st.session_state.user_name}** | {perfil.nome if perfil else '-'}")
+        st.caption("Sessão ativa")
     
     st.divider()
     
@@ -297,6 +345,28 @@ def page_main_menu():
     
     st.divider()
     
+    with st.expander("⚙️ Opções Avançadas"):
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            if st.button("🩺 Verificar Saúde da Sessão", use_container_width=True):
+                with st.spinner("Verificando..."):
+                    if hasattr(pje._auth, 'validar_saude_sessao'):
+                        if pje._auth.validar_saude_sessao():
+                            st.success("✅ Sessão saudável")
+                        else:
+                            st.error("❌ Sessão corrompida")
+                            if st.button("🔄 Resetar Sessão"):
+                                do_logout(limpar_tudo=True, forcar=True)
+        
+        with col2:
+            if st.button("🔄 Resetar Sessão Completa", use_container_width=True):
+                st.warning("Isso irá apagar todas as credenciais salvas")
+                if st.button("Confirmar Reset"):
+                    do_logout(limpar_tudo=True, forcar=True)
+    
+    st.divider()
+    
     c1, c2, c3 = st.columns(3)
     with c1:
         if st.button("Trocar Perfil", use_container_width=True):
@@ -318,7 +388,7 @@ def page_download_by_task():
     pje = get_pje_client()
     
     with st.sidebar:
-        st.subheader("Opcoes")
+        st.subheader("Opções")
         usar_favoritas = st.checkbox("Apenas favoritas")
         limite = st.number_input("Limite (0=todos)", min_value=0, max_value=500, value=0)
         tamanho_lote = st.slider("Tamanho lote", 5, 30, 10)
@@ -368,6 +438,7 @@ def page_download_by_task():
                     st.session_state.task_usar_favoritas = usar_favoritas
                     st.session_state.task_tamanho_lote = tamanho_lote
                     st.session_state.cancelamento_solicitado = False
+                    st.session_state.show_cancel_confirm = False
                     st.session_state.page = 'processing_task'
                     st.rerun()
 
@@ -378,7 +449,7 @@ def page_download_by_tag():
     pje = get_pje_client()
     
     with st.sidebar:
-        st.subheader("Opcoes")
+        st.subheader("Opções")
         limite = st.number_input("Limite (0=todos)", min_value=0, max_value=500, value=0)
         tamanho_lote = st.slider("Tamanho lote", 5, 30, 10)
         st.divider()
@@ -415,6 +486,7 @@ def page_download_by_tag():
                             st.session_state.tag_limit = limite if limite > 0 else None
                             st.session_state.tag_tamanho_lote = tamanho_lote
                             st.session_state.cancelamento_solicitado = False
+                            st.session_state.show_cancel_confirm = False
                             st.session_state.page = 'processing_tag'
                             st.rerun()
         else:
@@ -427,10 +499,10 @@ def page_download_by_number():
     st.title("Download por Número de Processo")
     
     with st.sidebar:
-        st.subheader("Opcoes")
+        st.subheader("Opções")
         tipo_documento = st.selectbox(
             "Tipo de documento",
-            ["Selecione", "Peticao Inicial", "Peticao", "Sentenca", "Decisao", "Despacho", "Acordao", "Outros documentos"],
+            ["Selecione", "Petição Inicial", "Petição", "Sentença", "Decisão", "Despacho", "Acórdão", "Outros documentos"],
             index=0
         )
         st.divider()
@@ -490,6 +562,7 @@ def page_download_by_number():
                 st.session_state.processos_para_baixar = processos_validos
                 st.session_state.tipo_documento_numero = tipo_documento
                 st.session_state.cancelamento_solicitado = False
+                st.session_state.show_cancel_confirm = False
                 st.session_state.page = 'processing_number'
                 st.rerun()
     else:
@@ -520,18 +593,50 @@ def page_processing_number():
     
     st.divider()
     
-    cancel_message = st.empty()
+    status_details = st.empty()
     
-    cancel_col = st.columns([1, 1, 1])[1]
-    with cancel_col:
-        cancel_clicked = st.button("Cancelar", use_container_width=True, key="cancel_btn_number", type="secondary")
+    st.divider()
+    
+    cancel_container = st.container()
+    
+    with cancel_container:
+        if st.session_state.get('cancelamento_solicitado', False):
+            st.error("⚠️ CANCELAMENTO EM ANDAMENTO - Aguarde...")
+            st.caption("O processamento será interrompido assim que possível")
+        else:
+            col_cancel = st.columns([1, 2, 1])[1]
+            with col_cancel:
+                if st.button(
+                    "🛑 Cancelar Processamento",
+                    use_container_width=True,
+                    type="secondary",
+                    key="cancel_btn_number",
+                    help="Interrompe o processamento atual"
+                ):
+                    st.session_state.show_cancel_confirm = True
+                    st.rerun()
+        
+        if st.session_state.get('show_cancel_confirm', False):
+            st.warning("⚠️ Tem certeza que deseja cancelar?")
+            
+            col_sim, col_nao = st.columns(2)
+            
+            with col_sim:
+                if st.button("✅ Sim, cancelar", use_container_width=True, type="primary"):
+                    st.session_state.cancelamento_solicitado = True
+                    st.session_state.show_cancel_confirm = False
+                    pje = get_pje_client()
+                    pje.cancelar_processamento()
+                    st.rerun()
+            
+            with col_nao:
+                if st.button("❌ Não, continuar", use_container_width=True):
+                    st.session_state.show_cancel_confirm = False
+                    st.rerun()
+            
+            st.stop()
     
     pje = get_pje_client()
-    
-    if cancel_clicked or st.session_state.get('cancelamento_solicitado', False):
-        st.session_state.cancelamento_solicitado = True
-        pje.cancelar_processamento()
-        cancel_message.warning("⚠️ Cancelamento solicitado. Aguarde...")
     
     try:
         generator = pje.processar_numeros_generator(
@@ -540,13 +645,30 @@ def page_processing_number():
             aguardar_download=True
         )
         
+        tempo_inicio = time.time()
+        
         for estado in generator:
             status = estado.get('status', '')
             progresso = estado.get('progresso', 0)
             total = estado.get('processos', 0)
             proc_atual = estado.get('processo_atual', '')
             
-            status_text.markdown(f"**Status:** {get_status_text(status)}")
+            status_icons = {
+                "iniciando": "🔄",
+                "buscando_processo": "🔍",
+                "processando": "⚙️",
+                "aguardando_downloads": "⏳",
+                "verificando_integridade": "✅",
+                "retry_1": "🔁",
+                "retry_2": "🔁",
+                "concluido": "✅",
+                "concluido_com_falhas": "⚠️",
+                "cancelado": "🛑",
+                "erro": "❌"
+            }
+            
+            icon = status_icons.get(status, "⚙️")
+            status_text.markdown(f"**{icon} {get_status_text(status)}**")
             
             if total > 0:
                 progress_bar.progress(min(progresso / total, 1.0))
@@ -555,21 +677,49 @@ def page_processing_number():
             
             metric_total.metric("Total", total)
             metric_prog.metric("Progresso", f"{progresso}/{total}")
-            metric_ok.metric("OK", estado.get('sucesso', 0))
-            metric_files.metric("Arquivos", len(estado.get('arquivos', [])))
+            metric_ok.metric("✅ Sucesso", estado.get('sucesso', 0))
+            metric_files.metric("📁 Arquivos", len(estado.get('arquivos', [])))
+            
+            tempo_decorrido = int(time.time() - tempo_inicio)
+            mins, secs = divmod(tempo_decorrido, 60)
+            
+            with status_details:
+                cols = st.columns(3)
+                cols[0].metric("⏱️ Tempo", f"{mins}m {secs}s")
+                
+                if progresso > 0 and total > 0:
+                    tempo_por_processo = tempo_decorrido / progresso
+                    tempo_restante = int((total - progresso) * tempo_por_processo)
+                    mins_rest, secs_rest = divmod(tempo_restante, 60)
+                    cols[1].metric("⏳ Estimado", f"{mins_rest}m {secs_rest}s")
+                
+                taxa_sucesso = (estado.get('sucesso', 0) / progresso * 100) if progresso > 0 else 0
+                cols[2].metric("📊 Taxa Sucesso", f"{taxa_sucesso:.1f}%")
             
             if status in ['concluido', 'concluido_com_falhas', 'cancelado', 'erro']:
                 st.session_state.relatorio = estado
                 st.session_state.cancelamento_solicitado = False
+                st.session_state.show_cancel_confirm = False
                 time.sleep(0.5)
                 st.session_state.page = 'result'
                 st.rerun()
                 break
+            
+            time.sleep(0.05)
         
+    except InterruptedError as e:
+        st.error(f"⚠️ Processamento cancelado: {e}")
+        time.sleep(2)
+        st.session_state.cancelamento_solicitado = False
+        st.session_state.show_cancel_confirm = False
+        st.session_state.page = 'download_by_number'
+        st.rerun()
+    
     except Exception as e:
-        st.error(f"Erro: {str(e)}")
+        st.error(f"❌ Erro: {str(e)}")
         if st.button("Voltar"):
             st.session_state.cancelamento_solicitado = False
+            st.session_state.show_cancel_confirm = False
             st.session_state.page = 'download_by_number'
             st.rerun()
 
@@ -600,18 +750,43 @@ def page_processing_task():
     
     st.divider()
     
-    cancel_message = st.empty()
+    status_details = st.empty()
     
-    cancel_col = st.columns([1, 1, 1])[1]
-    with cancel_col:
-        cancel_clicked = st.button("Cancelar", use_container_width=True, key="cancel_btn", type="secondary")
+    st.divider()
+    
+    cancel_container = st.container()
+    
+    with cancel_container:
+        if st.session_state.get('cancelamento_solicitado', False):
+            st.error("⚠️ CANCELAMENTO EM ANDAMENTO - Aguarde...")
+        else:
+            col_cancel = st.columns([1, 2, 1])[1]
+            with col_cancel:
+                if st.button("🛑 Cancelar", use_container_width=True, type="secondary", key="cancel_btn"):
+                    st.session_state.show_cancel_confirm = True
+                    st.rerun()
+        
+        if st.session_state.get('show_cancel_confirm', False):
+            st.warning("⚠️ Tem certeza que deseja cancelar?")
+            
+            col_sim, col_nao = st.columns(2)
+            
+            with col_sim:
+                if st.button("✅ Sim, cancelar", use_container_width=True, type="primary"):
+                    st.session_state.cancelamento_solicitado = True
+                    st.session_state.show_cancel_confirm = False
+                    pje = get_pje_client()
+                    pje.cancelar_processamento()
+                    st.rerun()
+            
+            with col_nao:
+                if st.button("❌ Não, continuar", use_container_width=True):
+                    st.session_state.show_cancel_confirm = False
+                    st.rerun()
+            
+            st.stop()
     
     pje = get_pje_client()
-    
-    if cancel_clicked or st.session_state.get('cancelamento_solicitado', False):
-        st.session_state.cancelamento_solicitado = True
-        pje.cancelar_processamento()
-        cancel_message.warning("⚠️ Cancelamento solicitado. Aguarde...")
     
     try:
         generator = pje.processar_tarefa_generator(
@@ -622,13 +797,23 @@ def page_processing_task():
             tamanho_lote=tamanho_lote
         )
         
+        tempo_inicio = time.time()
+        
         for estado in generator:
             status = estado.get('status', '')
             progresso = estado.get('progresso', 0)
             total = estado.get('processos', 0)
             proc_atual = estado.get('processo_atual', '')
             
-            status_text.markdown(f"**Status:** {get_status_text(status)}")
+            status_icons = {
+                "iniciando": "🔄", "buscando_tarefa": "🔍", "listando_processos": "📋",
+                "processando": "⚙️", "baixando_lote": "📦", "aguardando_downloads": "⏳",
+                "verificando_integridade": "✅", "retry_1": "🔁", "retry_2": "🔁",
+                "concluido": "✅", "concluido_com_falhas": "⚠️", "cancelado": "🛑", "erro": "❌"
+            }
+            
+            icon = status_icons.get(status, "⚙️")
+            status_text.markdown(f"**{icon} {get_status_text(status)}**")
             
             if total > 0:
                 progress_bar.progress(min(progresso / total, 1.0))
@@ -637,21 +822,41 @@ def page_processing_task():
             
             metric_total.metric("Total", total)
             metric_prog.metric("Progresso", f"{progresso}/{total}")
-            metric_ok.metric("OK", estado.get('sucesso', 0))
-            metric_files.metric("Arquivos", len(estado.get('arquivos', [])))
+            metric_ok.metric("✅ Sucesso", estado.get('sucesso', 0))
+            metric_files.metric("📁 Arquivos", len(estado.get('arquivos', [])))
+            
+            tempo_decorrido = int(time.time() - tempo_inicio)
+            mins, secs = divmod(tempo_decorrido, 60)
+            
+            with status_details:
+                cols = st.columns(3)
+                cols[0].metric("⏱️ Tempo", f"{mins}m {secs}s")
+                
+                if progresso > 0 and total > 0:
+                    tempo_por_processo = tempo_decorrido / progresso
+                    tempo_restante = int((total - progresso) * tempo_por_processo)
+                    mins_rest, secs_rest = divmod(tempo_restante, 60)
+                    cols[1].metric("⏳ Estimado", f"{mins_rest}m {secs_rest}s")
+                
+                taxa_sucesso = (estado.get('sucesso', 0) / progresso * 100) if progresso > 0 else 0
+                cols[2].metric("📊 Taxa", f"{taxa_sucesso:.1f}%")
             
             if status in ['concluido', 'concluido_com_falhas', 'cancelado', 'erro']:
                 st.session_state.relatorio = estado
                 st.session_state.cancelamento_solicitado = False
+                st.session_state.show_cancel_confirm = False
                 time.sleep(0.5)
                 st.session_state.page = 'result'
                 st.rerun()
                 break
+            
+            time.sleep(0.05)
         
     except Exception as e:
         st.error(f"Erro: {str(e)}")
         if st.button("Voltar"):
             st.session_state.cancelamento_solicitado = False
+            st.session_state.show_cancel_confirm = False
             st.session_state.page = 'download_by_task'
             st.rerun()
 
@@ -681,18 +886,43 @@ def page_processing_tag():
     
     st.divider()
     
-    cancel_message = st.empty()
+    status_details = st.empty()
     
-    cancel_col = st.columns([1, 1, 1])[1]
-    with cancel_col:
-        cancel_clicked = st.button("Cancelar", use_container_width=True, key="cancel_btn_tag", type="secondary")
+    st.divider()
+    
+    cancel_container = st.container()
+    
+    with cancel_container:
+        if st.session_state.get('cancelamento_solicitado', False):
+            st.error("⚠️ CANCELAMENTO EM ANDAMENTO - Aguarde...")
+        else:
+            col_cancel = st.columns([1, 2, 1])[1]
+            with col_cancel:
+                if st.button("🛑 Cancelar", use_container_width=True, type="secondary", key="cancel_btn_tag"):
+                    st.session_state.show_cancel_confirm = True
+                    st.rerun()
+        
+        if st.session_state.get('show_cancel_confirm', False):
+            st.warning("⚠️ Tem certeza que deseja cancelar?")
+            
+            col_sim, col_nao = st.columns(2)
+            
+            with col_sim:
+                if st.button("✅ Sim, cancelar", use_container_width=True, type="primary"):
+                    st.session_state.cancelamento_solicitado = True
+                    st.session_state.show_cancel_confirm = False
+                    pje = get_pje_client()
+                    pje.cancelar_processamento()
+                    st.rerun()
+            
+            with col_nao:
+                if st.button("❌ Não, continuar", use_container_width=True):
+                    st.session_state.show_cancel_confirm = False
+                    st.rerun()
+            
+            st.stop()
     
     pje = get_pje_client()
-    
-    if cancel_clicked or st.session_state.get('cancelamento_solicitado', False):
-        st.session_state.cancelamento_solicitado = True
-        pje.cancelar_processamento()
-        cancel_message.warning("⚠️ Cancelamento solicitado. Aguarde...")
     
     try:
         generator = pje.processar_etiqueta_generator(
@@ -702,13 +932,23 @@ def page_processing_tag():
             tamanho_lote=tamanho_lote
         )
         
+        tempo_inicio = time.time()
+        
         for estado in generator:
             status = estado.get('status', '')
             progresso = estado.get('progresso', 0)
             total = estado.get('processos', 0)
             proc_atual = estado.get('processo_atual', '')
             
-            status_text.markdown(f"**Status:** {get_status_text(status)}")
+            status_icons = {
+                "iniciando": "🔄", "buscando_etiqueta": "🔍", "listando_processos": "📋",
+                "processando": "⚙️", "baixando_lote": "📦", "aguardando_downloads": "⏳",
+                "verificando_integridade": "✅", "retry_1": "🔁", "retry_2": "🔁",
+                "concluido": "✅", "concluido_com_falhas": "⚠️", "cancelado": "🛑", "erro": "❌"
+            }
+            
+            icon = status_icons.get(status, "⚙️")
+            status_text.markdown(f"**{icon} {get_status_text(status)}**")
             
             if total > 0:
                 progress_bar.progress(min(progresso / total, 1.0))
@@ -717,21 +957,41 @@ def page_processing_tag():
             
             metric_total.metric("Total", total)
             metric_prog.metric("Progresso", f"{progresso}/{total}")
-            metric_ok.metric("OK", estado.get('sucesso', 0))
-            metric_files.metric("Arquivos", len(estado.get('arquivos', [])))
+            metric_ok.metric("✅ Sucesso", estado.get('sucesso', 0))
+            metric_files.metric("📁 Arquivos", len(estado.get('arquivos', [])))
+            
+            tempo_decorrido = int(time.time() - tempo_inicio)
+            mins, secs = divmod(tempo_decorrido, 60)
+            
+            with status_details:
+                cols = st.columns(3)
+                cols[0].metric("⏱️ Tempo", f"{mins}m {secs}s")
+                
+                if progresso > 0 and total > 0:
+                    tempo_por_processo = tempo_decorrido / progresso
+                    tempo_restante = int((total - progresso) * tempo_por_processo)
+                    mins_rest, secs_rest = divmod(tempo_restante, 60)
+                    cols[1].metric("⏳ Estimado", f"{mins_rest}m {secs_rest}s")
+                
+                taxa_sucesso = (estado.get('sucesso', 0) / progresso * 100) if progresso > 0 else 0
+                cols[2].metric("📊 Taxa", f"{taxa_sucesso:.1f}%")
             
             if status in ['concluido', 'concluido_com_falhas', 'cancelado', 'erro']:
                 st.session_state.relatorio = estado
                 st.session_state.cancelamento_solicitado = False
+                st.session_state.show_cancel_confirm = False
                 time.sleep(0.5)
                 st.session_state.page = 'result'
                 st.rerun()
                 break
+            
+            time.sleep(0.05)
         
     except Exception as e:
         st.error(f"Erro: {str(e)}")
         if st.button("Voltar"):
             st.session_state.cancelamento_solicitado = False
+            st.session_state.show_cancel_confirm = False
             st.session_state.page = 'download_by_tag'
             st.rerun()
 
@@ -741,9 +1001,9 @@ def page_result():
     status = relatorio.get('status', 'concluido')
     
     if status == 'concluido':
-        st.title("✅ Concluido")
+        st.title("✅ Concluído")
     elif status == 'concluido_com_falhas':
-        st.title("⚠️ Concluido com falhas")
+        st.title("⚠️ Concluído com falhas")
     elif status == 'cancelado':
         st.title("🚫 Cancelado")
     else:
@@ -773,7 +1033,7 @@ def page_result():
     st.divider()
     
     diretorio = relatorio.get('diretorio', st.session_state.download_dir)
-    st.text(f"Diretorio: {diretorio}")
+    st.text(f"Diretório: {diretorio}")
     
     col1, col2 = st.columns(2)
     with col1:
@@ -781,7 +1041,7 @@ def page_result():
             open_folder(diretorio)
     with col2:
         st.download_button(
-            "Baixar Relatorio",
+            "Baixar Relatório",
             data=json.dumps(relatorio, ensure_ascii=False, indent=2),
             file_name="relatorio.json",
             mime="application/json",

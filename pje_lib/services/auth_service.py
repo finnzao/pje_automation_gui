@@ -5,6 +5,8 @@ Servico de autenticacao do PJE.
 import os
 import re
 import time
+import shutil
+from pathlib import Path
 from typing import Optional, List
 
 from ..config import BASE_URL, SSO_URL, API_BASE
@@ -83,7 +85,6 @@ class AuthService:
         username = None
         password = None
         
-        from pathlib import Path
         env_path = Path.cwd() / ".env"
         
         if env_path.exists():
@@ -182,11 +183,185 @@ class AuthService:
             self.logger.error(f"Erro no login: {e}")
             return False
     
-    def ensure_logged_in(self) -> bool:
-        """Garante que esta logado."""
-        if self.verificar_sessao_ativa():
+    def validar_saude_sessao(self) -> bool:
+        """
+        Valida se a sessao esta realmente funcional.
+        
+        Verifica:
+        - Usuario esta autenticado
+        - Consegue listar tarefas OU etiquetas
+        - Dados retornados fazem sentido
+        
+        Returns:
+            True se sessao esta saudavel, False se corrompida
+        """
+        if not self.usuario:
+            self.logger.warning("Sessao sem usuario")
+            return False
+        
+        try:
+            # Teste 1: Verificar currentUser
+            headers = self.client.get_api_headers()
+            resp = self.client.session.get(
+                f"{API_BASE}/usuario/currentUser",
+                headers=headers,
+                timeout=10
+            )
+            
+            if resp.status_code != 200:
+                self.logger.warning(f"currentUser retornou {resp.status_code}")
+                return False
+            
+            user_data = resp.json()
+            if not user_data.get("idUsuario"):
+                self.logger.warning("currentUser sem ID")
+                return False
+            
+            # Teste 2: Tentar listar tarefas
+            resp_tarefas = self.client.api_post(
+                "painelUsuario/tarefas",
+                {"numeroProcesso": "", "competencia": "", "etiquetas": []}
+            )
+            
+            # Teste 3: Tentar listar etiquetas
+            resp_etiquetas = self.client.api_post(
+                "painelUsuario/etiquetas",
+                {"page": 0, "maxResults": 10, "tagsString": ""}
+            )
+            
+            # Pelo menos um dos endpoints deve funcionar
+            tarefas_ok = resp_tarefas.status_code == 200
+            etiquetas_ok = resp_etiquetas.status_code == 200
+            
+            if not (tarefas_ok or etiquetas_ok):
+                self.logger.warning("Nenhum endpoint de dados funcionou")
+                return False
+            
+            # Verificar se retornou estrutura valida
+            if tarefas_ok:
+                tarefas = resp_tarefas.json()
+                if not isinstance(tarefas, list):
+                    self.logger.warning("Tarefas retornou estrutura invalida")
+                    return False
+            
+            if etiquetas_ok:
+                etiquetas_data = resp_etiquetas.json()
+                if not isinstance(etiquetas_data, dict):
+                    self.logger.warning("Etiquetas retornou estrutura invalida")
+                    return False
+            
+            self.logger.info("✓ Sessao validada com sucesso")
             return True
-        return self.login()
+            
+        except Exception as e:
+            self.logger.error(f"Erro ao validar saude da sessao: {e}")
+            return False
+    
+    def forcar_reset_sessao(self) -> bool:
+        """
+        Forca reset completo da sessao.
+        
+        - Limpa cookies
+        - Apaga arquivos de sessao
+        - Apaga arquivos de config
+        - Reinicializa estado
+        """
+        self.logger.warning("🔄 Forcando reset completo da sessao")
+        
+        try:
+            # 1. Limpar cookies
+            self.client.session.cookies.clear()
+            
+            # 2. Limpar sessao salva
+            self.session_manager.clear_session()
+            
+            # 3. Limpar config (credenciais salvas)
+            config_dir = Path(".config")
+            if config_dir.exists():
+                try:
+                    shutil.rmtree(config_dir)
+                    self.logger.info("✓ Diretorio .config removido")
+                except Exception as e:
+                    self.logger.warning(f"Erro ao remover .config: {e}")
+            
+            # Recriar diretorio vazio
+            config_dir.mkdir(parents=True, exist_ok=True)
+            
+            # 4. Resetar estado interno
+            self.usuario = None
+            self.perfis_disponiveis = []
+            
+            self.logger.success("✓ Reset completo concluido")
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"Erro ao forcar reset: {e}")
+            return False
+    
+    def login_com_validacao(
+        self, 
+        username: str = None, 
+        password: str = None, 
+        force: bool = False,
+        max_tentativas: int = 2
+    ) -> bool:
+        """
+        Login com validacao automatica de saude da sessao.
+        
+        Se detectar sessao corrompida, faz reset e tenta novamente.
+        """
+        tentativa = 0
+        
+        while tentativa < max_tentativas:
+            tentativa += 1
+            
+            # Fazer login normal
+            if not self.login(username, password, force):
+                self.logger.error(f"Falha no login (tentativa {tentativa}/{max_tentativas})")
+                
+                # Na segunda tentativa, forcar reset
+                if tentativa == 1:
+                    self.logger.warning("Forcando reset para proxima tentativa")
+                    self.forcar_reset_sessao()
+                    force = True
+                    continue
+                
+                return False
+            
+            # Validar saude da sessao
+            self.logger.info("Validando saude da sessao...")
+            
+            if self.validar_saude_sessao():
+                return True
+            
+            # Sessao corrompida detectada
+            self.logger.error("❌ Sessao corrompida detectada!")
+            
+            if tentativa < max_tentativas:
+                self.logger.warning(f"Tentando novamente ({tentativa + 1}/{max_tentativas})")
+                self.forcar_reset_sessao()
+                force = True
+            else:
+                self.logger.error("Numero maximo de tentativas atingido")
+                return False
+        
+        return False
+    
+    def ensure_logged_in(self) -> bool:
+        """
+        Versao melhorada que valida saude da sessao.
+        """
+        # Se ja esta logado, validar saude
+        if self.usuario:
+            if self.validar_saude_sessao():
+                return True
+            
+            # Sessao corrompida, forcar reset
+            self.logger.warning("Sessao existente esta corrompida")
+            self.forcar_reset_sessao()
+        
+        # Fazer login com validacao
+        return self.login_com_validacao()
     
     def limpar_sessao(self):
         """Limpa sessao salva."""
