@@ -110,7 +110,7 @@ def get_pje_client() -> Optional[PJEClient]:
 
 
 def verificar_sessao_ou_redirecionar():
-    """Verifica saúde da sessão e redireciona para login se corrompida"""
+    """Verifica saúde da sessão de forma OTIMIZADA - usa cache"""
     pje = get_pje_client()
     
     if not pje or not pje.usuario:
@@ -119,15 +119,14 @@ def verificar_sessao_ou_redirecionar():
         limpar_sessao_completa()
         return False
     
-    if hasattr(pje._auth, 'validar_saude_sessao'):
-        if not pje._auth.validar_saude_sessao():
+    if hasattr(pje._auth, 'validar_saude_sessao_rapida'):
+        if not pje._auth.validar_saude_sessao_rapida():
             st.error("Sessão corrompida detectada. Fazendo logout...")
             time.sleep(1)
             limpar_sessao_completa()
             return False
     
     return True
-
 
 def limpar_sessao_completa():
     """Limpa completamente a sessão e volta para login"""

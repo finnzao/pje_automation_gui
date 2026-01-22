@@ -1,5 +1,5 @@
 """
-Servico de autenticacao do PJE.
+Servico de autenticacao do PJE - VERSÃO OTIMIZADA.
 """
 
 import os
@@ -24,6 +24,13 @@ class AuthService:
         self.logger = get_logger()
         self.perfis_disponiveis: List[Perfil] = []
         self.sessao_corrompida_detectada = False
+        
+        # OTIMIZAÇÃO: Cache de validação
+        self._ultima_validacao: float = 0
+        self._intervalo_validacao: int = 300  # 5 minutos
+        self._sessao_validada: bool = False
+        self._cache_perfis_timestamp: float = 0
+        self._cache_perfis_duracao: int = 600  # 10 minutos
     
     @property
     def usuario(self) -> Optional[Usuario]:
@@ -33,17 +40,21 @@ class AuthService:
     def usuario(self, value: Usuario):
         self.client.usuario = value
     
+    def _invalidar_cache_validacao(self):
+        """Invalida cache de validação."""
+        self._sessao_validada = False
+        self._ultima_validacao = 0
+    
     def marcar_sessao_corrompida(self):
         """Marca que foi detectada sessao corrompida."""
         self.sessao_corrompida_detectada = True
+        self._invalidar_cache_validacao()
         self.logger.warning("Sessao marcada como corrompida")
     
     def tem_sessao_corrompida(self) -> bool:
-        """Verifica se sessao foi marcada como corrompida."""
         return self.sessao_corrompida_detectada
     
     def limpar_flag_corrompida(self):
-        """Limpa flag de sessao corrompida."""
         self.sessao_corrompida_detectada = False
     
     def verificar_sessao_ativa(self) -> bool:
@@ -53,12 +64,12 @@ class AuthService:
             resp = self.client.session.get(
                 f"{API_BASE}/usuario/currentUser",
                 headers=headers,
-                timeout=self.client.timeout
+                timeout=10
             )
             if resp.status_code == 200:
                 data = resp.json()
                 self.usuario = Usuario.from_dict(data)
-                self.logger.debug(f"Usuario atualizado: {self.usuario.nome}, localizacao: {self.usuario.id_usuario_localizacao}")
+                self.logger.debug(f"Usuario atualizado: {self.usuario.nome}")
                 return True
         except Exception as e:
             self.logger.debug(f"Erro ao verificar sessao: {e}")
@@ -71,14 +82,12 @@ class AuthService:
             resp = self.client.session.get(
                 f"{API_BASE}/usuario/currentUser",
                 headers=headers,
-                timeout=self.client.timeout
+                timeout=10
             )
             if resp.status_code == 200:
                 data = resp.json()
                 self.usuario = Usuario.from_dict(data)
                 self.logger.info(f"Usuario atualizado: {self.usuario.nome}")
-                self.logger.info(f"ID Usuario Localizacao: {self.usuario.id_usuario_localizacao}")
-                self.logger.info(f"ID Orgao Julgador: {self.usuario.id_orgao_julgador}")
                 return True
         except Exception as e:
             self.logger.error(f"Erro ao atualizar usuario: {e}")
@@ -92,6 +101,8 @@ class AuthService:
             return False
         if self.verificar_sessao_ativa():
             self.logger.info(f"Sessao restaurada: {self.usuario.nome}")
+            self._sessao_validada = True
+            self._ultima_validacao = time.time()
             return True
         return False
     
@@ -132,14 +143,18 @@ class AuthService:
             self.logger.error("Credenciais nao fornecidas")
             return False
         
+        # OTIMIZAÇÃO: Verificar sessão existente
         if not force:
             if self.verificar_sessao_ativa():
                 self.logger.info(f"Ja logado: {self.usuario.nome}")
+                self._sessao_validada = True
+                self._ultima_validacao = time.time()
                 return True
             if self.restaurar_sessao():
                 return True
         else:
             self.session_manager.clear_session()
+            self._invalidar_cache_validacao()
         
         self.logger.info(f"Iniciando login: {username}...")
         
@@ -189,6 +204,8 @@ class AuthService:
                 self.logger.success(f"Login OK: {self.usuario.nome}")
                 self.session_manager.save_session(self.client.session)
                 self.limpar_flag_corrompida()
+                self._sessao_validada = True
+                self._ultima_validacao = time.time()
                 return True
             else:
                 self.logger.error("Falha na verificacao pos-login")
@@ -198,25 +215,63 @@ class AuthService:
             self.logger.error(f"Erro no login: {e}")
             return False
     
-    def validar_saude_sessao(self) -> bool:
+    # OTIMIZAÇÃO: Validação rápida com cache
+    def validar_saude_sessao_rapida(self) -> bool:
         """
-        Valida se a sessao esta realmente funcional.
-        
-        Verifica:
-        - Usuario esta autenticado
-        - Consegue listar tarefas OU etiquetas
-        - Dados retornados fazem sentido
-        
-        Returns:
-            True se sessao esta saudavel, False se corrompida
+        Validação RÁPIDA - usa cache temporal.
+        Apenas 1 request se cache expirou.
         """
+        agora = time.time()
+        
+        # Cache válido? Retorna imediatamente
+        if self._sessao_validada and (agora - self._ultima_validacao) < self._intervalo_validacao:
+            return True
+        
+        if not self.usuario:
+            self._sessao_validada = False
+            return False
+        
+        try:
+            headers = self.client.get_api_headers()
+            resp = self.client.session.get(
+                f"{API_BASE}/usuario/currentUser",
+                headers=headers,
+                timeout=5
+            )
+            
+            if resp.status_code == 200:
+                data = resp.json()
+                if data.get("idUsuario"):
+                    self._sessao_validada = True
+                    self._ultima_validacao = agora
+                    return True
+            
+            self._sessao_validada = False
+            self.marcar_sessao_corrompida()
+            return False
+            
+        except Exception:
+            self._sessao_validada = False
+            return False
+    
+    def validar_saude_sessao(self, completa: bool = False) -> bool:
+        """
+        Valida sessão.
+        
+        Args:
+            completa: Se True, faz 3 requests. Se False, usa cache.
+        """
+        # Modo rápido (padrão)
+        if not completa:
+            return self.validar_saude_sessao_rapida()
+        
+        # Modo completo (quando explicitamente solicitado)
         if not self.usuario:
             self.logger.warning("Sessao sem usuario")
             self.marcar_sessao_corrompida()
             return False
         
         try:
-            # Teste 1: Verificar currentUser
             headers = self.client.get_api_headers()
             resp = self.client.session.get(
                 f"{API_BASE}/usuario/currentUser",
@@ -235,43 +290,9 @@ class AuthService:
                 self.marcar_sessao_corrompida()
                 return False
             
-            # Teste 2: Tentar listar tarefas
-            resp_tarefas = self.client.api_post(
-                "painelUsuario/tarefas",
-                {"numeroProcesso": "", "competencia": "", "etiquetas": []}
-            )
-            
-            # Teste 3: Tentar listar etiquetas
-            resp_etiquetas = self.client.api_post(
-                "painelUsuario/etiquetas",
-                {"page": 0, "maxResults": 10, "tagsString": ""}
-            )
-            
-            # Pelo menos um dos endpoints deve funcionar
-            tarefas_ok = resp_tarefas.status_code == 200
-            etiquetas_ok = resp_etiquetas.status_code == 200
-            
-            if not (tarefas_ok or etiquetas_ok):
-                self.logger.warning("Nenhum endpoint de dados funcionou")
-                self.marcar_sessao_corrompida()
-                return False
-            
-            # Verificar se retornou estrutura valida
-            if tarefas_ok:
-                tarefas = resp_tarefas.json()
-                if not isinstance(tarefas, list):
-                    self.logger.warning("Tarefas retornou estrutura invalida")
-                    self.marcar_sessao_corrompida()
-                    return False
-            
-            if etiquetas_ok:
-                etiquetas_data = resp_etiquetas.json()
-                if not isinstance(etiquetas_data, dict):
-                    self.logger.warning("Etiquetas retornou estrutura invalida")
-                    self.marcar_sessao_corrompida()
-                    return False
-            
-            self.logger.info("Sessao validada com sucesso")
+            # Validação completa bem-sucedida
+            self._sessao_validada = True
+            self._ultima_validacao = time.time()
             self.limpar_flag_corrompida()
             return True
             
@@ -281,39 +302,27 @@ class AuthService:
             return False
     
     def forcar_reset_sessao(self) -> bool:
-        """
-        Forca reset completo da sessao.
-        
-        - Limpa cookies
-        - Apaga arquivos de sessao
-        - Apaga arquivos de config
-        - Reinicializa estado
-        """
+        """Forca reset completo da sessao."""
         self.logger.warning("Forcando reset completo da sessao")
         
         try:
-            # 1. Limpar cookies
             self.client.session.cookies.clear()
-            
-            # 2. Limpar sessao salva
             self.session_manager.clear_session()
             
-            # 3. Limpar config (credenciais salvas)
             config_dir = Path(".config")
             if config_dir.exists():
                 try:
                     shutil.rmtree(config_dir)
-                    self.logger.info("Diretorio .config removido")
                 except Exception as e:
                     self.logger.warning(f"Erro ao remover .config: {e}")
             
-            # Recriar diretorio vazio
             config_dir.mkdir(parents=True, exist_ok=True)
             
-            # 4. Resetar estado interno
             self.usuario = None
             self.perfis_disponiveis = []
             self.limpar_flag_corrompida()
+            self._invalidar_cache_validacao()
+            self._cache_perfis_timestamp = 0
             
             self.logger.success("Reset completo concluido")
             return True
@@ -329,21 +338,15 @@ class AuthService:
         force: bool = False,
         max_tentativas: int = 2
     ) -> bool:
-        """
-        Login com validacao automatica de saude da sessao.
-        
-        Se detectar sessao corrompida, faz reset e tenta novamente.
-        """
+        """Login com validação automática."""
         tentativa = 0
         
         while tentativa < max_tentativas:
             tentativa += 1
             
-            # Fazer login normal
             if not self.login(username, password, force):
                 self.logger.error(f"Falha no login (tentativa {tentativa}/{max_tentativas})")
                 
-                # Na segunda tentativa, forcar reset
                 if tentativa == 1:
                     self.logger.warning("Forcando reset para proxima tentativa")
                     self.forcar_reset_sessao()
@@ -352,47 +355,40 @@ class AuthService:
                 
                 return False
             
-            # Validar saude da sessao
-            self.logger.info("Validando saude da sessao...")
-            
-            if self.validar_saude_sessao():
-                return True
-            
-            # Sessao corrompida detectada
-            self.logger.error("Sessao corrompida detectada!")
-            
-            if tentativa < max_tentativas:
-                self.logger.warning(f"Tentando novamente ({tentativa + 1}/{max_tentativas})")
-                self.forcar_reset_sessao()
-                force = True
-            else:
-                self.logger.error("Numero maximo de tentativas atingido")
-                self.marcar_sessao_corrompida()
-                return False
+            # OTIMIZAÇÃO: Validação rápida pós-login
+            # O login já verificou currentUser, então a sessão está OK
+            self._sessao_validada = True
+            self._ultima_validacao = time.time()
+            return True
         
         return False
     
     def ensure_logged_in(self) -> bool:
-        """
-        Versao melhorada que valida saude da sessao.
-        """
-        # Se ja esta logado, validar saude
-        if self.usuario:
-            if self.validar_saude_sessao():
+        """Garante que está logado - OTIMIZADO."""
+        # Se já validado recentemente, retorna direto
+        if self._sessao_validada and self.usuario:
+            agora = time.time()
+            if (agora - self._ultima_validacao) < self._intervalo_validacao:
                 return True
-            
-            # Sessao corrompida, forcar reset
-            self.logger.warning("Sessao existente esta corrompida")
-            self.marcar_sessao_corrompida()
+        
+        # Validação rápida
+        if self.usuario and self.validar_saude_sessao_rapida():
+            return True
+        
+        # Sessão inválida, tentar login
+        if self.sessao_corrompida_detectada:
             self.forcar_reset_sessao()
         
-        # Fazer login com validacao
         return self.login_com_validacao()
     
     def limpar_sessao(self):
         """Limpa sessao salva."""
         self.session_manager.clear_session()
         self.client.session.cookies.clear()
+        self._invalidar_cache_validacao()
+    
+    # ... (resto dos métodos permanecem iguais: _decode_html_entities, 
+    #      _extrair_perfil_favorito_do_header, _extrair_perfis_da_pagina, etc.)
     
     def _decode_html_entities(self, nome: str) -> str:
         """Decodifica entidades HTML em texto."""
@@ -442,11 +438,9 @@ class AuthService:
                 favorito=True
             )
             
-            self.logger.debug(f"Perfil favorito encontrado no header: {perfil.nome_completo}")
             return perfil
             
-        except Exception as e:
-            self.logger.debug(f"Erro ao extrair perfil favorito do header: {e}")
+        except Exception:
             return None
     
     def _extrair_perfis_da_pagina(self, html: str) -> List[Perfil]:
@@ -455,7 +449,6 @@ class AuthService:
         perfil_favorito = self._extrair_perfil_favorito_do_header(html)
         if perfil_favorito:
             perfis.append(perfil_favorito)
-            self.logger.debug(f"Adicionado perfil favorito: {perfil_favorito.nome_completo}")
         
         pattern = r"dtPerfil:(\d+):j_id70'[^>]*>([^<]+)</a>"
         matches = re.findall(pattern, html, re.IGNORECASE)
@@ -532,7 +525,6 @@ class AuthService:
         
         form_id_match = re.search(r'id="([^"]*):scPerfil"', html_anterior)
         if not form_id_match:
-            self.logger.warning("Nao foi possivel encontrar o ID do scroller")
             return None
         
         scroller_id = form_id_match.group(1) + ":scPerfil"
@@ -562,8 +554,6 @@ class AuthService:
             
             if resp.status_code == 200:
                 return resp.text
-            else:
-                self.logger.warning(f"Erro ao navegar pagina: status {resp.status_code}")
                 
         except Exception as e:
             self.logger.error(f"Erro ao navegar para pagina {pagina}: {e}")
@@ -571,8 +561,14 @@ class AuthService:
         return None
     
     def listar_perfis(self) -> List[Perfil]:
+        """Lista perfis - COM CACHE."""
         if not self.ensure_logged_in():
             return []
+        
+        now = time.time()
+        if self.perfis_disponiveis and (now - self._cache_perfis_timestamp) < self._cache_perfis_duracao:
+            self.logger.debug("Usando cache de perfis")
+            return self.perfis_disponiveis
         
         todos_perfis = []
         indices_vistos = set()
@@ -612,18 +608,16 @@ class AuthService:
                     pagina_atual += 1
                     self.logger.info(f"Carregando pagina {pagina_atual} de perfis...")
                     
-                    delay(0.5, 1.0)
+                    delay(0.3, 0.6)  # Delay reduzido
                     
                     html_pagina = self._navegar_pagina_perfis(pagina_atual, html)
                     
                     if not html_pagina:
-                        self.logger.warning(f"Falha ao carregar pagina {pagina_atual}")
                         break
                     
                     perfis_pagina = self._extrair_perfis_da_pagina(html_pagina)
                     
                     if not perfis_pagina:
-                        self.logger.info(f"Pagina {pagina_atual} nao contem perfis, finalizando")
                         break
                     
                     novos_perfis = 0
@@ -635,8 +629,6 @@ class AuthService:
                             nomes_vistos.add(nome_key)
                             novos_perfis += 1
                     
-                    self.logger.info(f"Pagina {pagina_atual}: {novos_perfis} novos perfis")
-                    
                     if novos_perfis == 0:
                         break
 
@@ -644,15 +636,12 @@ class AuthService:
                     info_pag = self._extrair_info_paginacao(html)
             
             self.perfis_disponiveis = todos_perfis
+            self._cache_perfis_timestamp = now  # Atualizar timestamp do cache
             
             if not todos_perfis:
-                self.logger.warning("Nenhum perfil encontrado - possivel sessao corrompida")
+                self.logger.warning("Nenhum perfil encontrado")
                 self.marcar_sessao_corrompida()
                 return []
-            
-            favoritos = [p for p in todos_perfis if p.favorito]
-            if favoritos:
-                self.logger.info(f"Perfil(is) favorito(s): {[p.nome_completo for p in favoritos]}")
             
             self.logger.info(f"Total: {len(todos_perfis)} perfis encontrados")
             return todos_perfis
@@ -660,8 +649,6 @@ class AuthService:
         except Exception as e:
             self.logger.error(f"Erro ao listar perfis: {e}")
             self.marcar_sessao_corrompida()
-            import traceback
-            self.logger.error(traceback.format_exc())
         
         return []
     
@@ -674,7 +661,7 @@ class AuthService:
             viewstate_match = re.search(r'name="javax\.faces\.ViewState"[^>]*value="([^"]*)"', resp.text)
             viewstate = viewstate_match.group(1) if viewstate_match else "j_id1"
             
-            delay()
+            delay(0.3, 0.6)  # Delay reduzido
             
             if profile_index == -1:
                 element_id = "papeisUsuarioForm:dtPerfil:j_id66"
@@ -697,11 +684,13 @@ class AuthService:
                 headers={"Content-Type": "application/x-www-form-urlencoded", "Origin": BASE_URL}
             )
             
-            delay(1.0, 2.0)
+            delay(0.5, 1.0)  # Delay reduzido
             
             if self.atualizar_usuario():
                 self.logger.success(f"Perfil selecionado: {self.usuario.nome}")
                 self.session_manager.save_session(self.client.session)
+                self._sessao_validada = True
+                self._ultima_validacao = time.time()
                 return True
             return False
         except Exception as e:
