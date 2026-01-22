@@ -94,6 +94,7 @@ def init_session_state():
         'cancelamento_solicitado': False,
         'show_cancel_confirm': False,
         'perfil_sendo_selecionado': False,
+        'processing_iteration': 0,  # Contador para chaves únicas
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -239,10 +240,10 @@ def page_login():
             st.info(f"Credenciais salvas para: {saved_user}")
             c1, c2 = st.columns(2)
             with c1:
-                if st.button("Entrar com credenciais salvas", use_container_width=True, type="primary"):
+                if st.button("Entrar com credenciais salvas", use_container_width=True, type="primary", key="btn_login_saved"):
                     do_login(saved_user, saved_pass)
             with c2:
-                if st.button("Limpar credenciais", use_container_width=True):
+                if st.button("Limpar credenciais", use_container_width=True, key="btn_clear_cred"):
                     cred_manager.clear_credentials()
                     st.rerun()
             st.markdown("---")
@@ -296,12 +297,12 @@ def page_select_profile():
     col1, col2, col3 = st.columns([1, 1, 3])
     
     with col1:
-        if st.button("Atualizar lista", use_container_width=True):
+        if st.button("Atualizar lista", use_container_width=True, key="btn_refresh_profiles"):
             st.session_state.perfis = []
             st.rerun()
     
     with col2:
-        if st.button("Verificar sessão", use_container_width=True):
+        if st.button("Verificar sessão", use_container_width=True, key="btn_check_session_profile"):
             with st.spinner("Verificando..."):
                 if hasattr(pje._auth, 'validar_saude_sessao'):
                     if pje._auth.validar_saude_sessao():
@@ -324,11 +325,11 @@ def page_select_profile():
                 
                 col1, col2 = st.columns(2)
                 with col1:
-                    if st.button("Tentar novamente", type="primary", use_container_width=True):
+                    if st.button("Tentar novamente", type="primary", use_container_width=True, key="btn_retry_profiles"):
                         limpar_sessao_completa()
                 
                 with col2:
-                    if st.button("Sair", use_container_width=True):
+                    if st.button("Sair", use_container_width=True, key="btn_exit_profiles"):
                         limpar_sessao_completa()
                 
                 return
@@ -338,7 +339,7 @@ def page_select_profile():
     st.info(f"Encontrados {len(perfis)} perfil(is) disponível(is)")
     
     # Busca
-    busca_perfil = st.text_input("Filtrar perfis", placeholder="Digite para buscar...")
+    busca_perfil = st.text_input("Filtrar perfis", placeholder="Digite para buscar...", key="input_filter_profiles")
     
     if busca_perfil:
         perfis_filtrados = [p for p in perfis if busca_perfil.lower() in p.nome_completo.lower()]
@@ -366,7 +367,7 @@ def page_select_profile():
                 st.markdown(nome_display)
             
             with col2:
-                if st.button("Selecionar", key=f"perfil_{perfil.index}", use_container_width=True):
+                if st.button("Selecionar", key=f"perfil_{perfil.index}_{perfil.nome[:10]}", use_container_width=True):
                     st.session_state.perfil_sendo_selecionado = True
                     with st.spinner(f"Selecionando {perfil.nome}..."):
                         if pje.select_profile_by_index(perfil.index):
@@ -387,7 +388,7 @@ def page_select_profile():
         st.info("Selecionando perfil, aguarde...")
     
     # Botão de sair
-    if st.button("Sair do sistema", use_container_width=True):
+    if st.button("Sair do sistema", use_container_width=True, key="btn_logout_profile"):
         limpar_sessao_completa()
 
 
@@ -434,18 +435,18 @@ def page_main_menu():
     col1, col2, col3, col4 = st.columns(4)
     
     with col1:
-        if st.button("Trocar perfil", use_container_width=True):
+        if st.button("Trocar perfil", use_container_width=True, key="btn_change_profile"):
             st.session_state.tarefas = []
             st.session_state.tarefas_favoritas = []
             st.session_state.page = 'select_profile'
             st.rerun()
     
     with col2:
-        if st.button("Abrir pasta de downloads", use_container_width=True):
+        if st.button("Abrir pasta de downloads", use_container_width=True, key="btn_open_downloads"):
             open_folder(st.session_state.download_dir)
     
     with col3:
-        if st.button("Verificar sessão", use_container_width=True):
+        if st.button("Verificar sessão", use_container_width=True, key="btn_check_session_main"):
             pje = get_pje_client()
             if hasattr(pje._auth, 'validar_saude_sessao'):
                 with st.spinner("Verificando..."):
@@ -457,7 +458,7 @@ def page_main_menu():
                         limpar_sessao_completa()
     
     with col4:
-        if st.button("Sair do sistema", use_container_width=True):
+        if st.button("Sair do sistema", use_container_width=True, key="btn_logout_main"):
             limpar_sessao_completa()
 
 
@@ -471,20 +472,20 @@ def page_download_by_task():
     
     with st.sidebar:
         st.header("Configurações")
-        usar_favoritas = st.checkbox("Apenas tarefas favoritas")
-        limite = st.number_input("Limite de processos (0 = todos)", min_value=0, max_value=500, value=0)
-        tamanho_lote = st.slider("Tamanho do lote de download", 5, 30, 10)
+        usar_favoritas = st.checkbox("Apenas tarefas favoritas", key="chk_favoritas")
+        limite = st.number_input("Limite de processos (0 = todos)", min_value=0, max_value=500, value=0, key="input_limite_task")
+        tamanho_lote = st.slider("Tamanho do lote de download", 5, 30, 10, key="slider_lote_task")
         
         st.markdown("---")
         
-        if st.button("Atualizar lista de tarefas", use_container_width=True):
+        if st.button("Atualizar lista de tarefas", use_container_width=True, key="btn_refresh_tasks"):
             st.session_state.tarefas = []
             st.session_state.tarefas_favoritas = []
             st.rerun()
         
         st.markdown("---")
         
-        if st.button("Voltar ao menu", use_container_width=True):
+        if st.button("Voltar ao menu", use_container_width=True, key="btn_back_task"):
             st.session_state.page = 'main_menu'
             st.rerun()
     
@@ -507,7 +508,7 @@ def page_download_by_task():
     st.info(f"Total: {len(tarefas)} tarefa(s)")
     
     # Busca
-    busca = st.text_input("Filtrar tarefas", placeholder="Digite para buscar...")
+    busca = st.text_input("Filtrar tarefas", placeholder="Digite para buscar...", key="input_filter_tasks")
     tarefas_filtradas = [t for t in tarefas if busca.lower() in t.nome.lower()] if busca else tarefas
     
     st.markdown("---")
@@ -523,13 +524,14 @@ def page_download_by_task():
             st.caption(f"{tarefa.quantidade_pendente} pendente(s)")
         
         with col3:
-            if st.button("Baixar", key=f"tarefa_{idx}", use_container_width=True):
+            if st.button("Baixar", key=f"tarefa_{idx}_{tarefa.id}", use_container_width=True):
                 st.session_state.selected_task = tarefa
                 st.session_state.task_limit = limite if limite > 0 else None
                 st.session_state.task_usar_favoritas = usar_favoritas
                 st.session_state.task_tamanho_lote = tamanho_lote
                 st.session_state.cancelamento_solicitado = False
                 st.session_state.show_cancel_confirm = False
+                st.session_state.processing_iteration = 0
                 st.session_state.page = 'processing_task'
                 st.rerun()
         
@@ -546,17 +548,17 @@ def page_download_by_tag():
     
     with st.sidebar:
         st.header("Configurações")
-        limite = st.number_input("Limite de processos (0 = todos)", min_value=0, max_value=500, value=0)
-        tamanho_lote = st.slider("Tamanho do lote de download", 5, 30, 10)
+        limite = st.number_input("Limite de processos (0 = todos)", min_value=0, max_value=500, value=0, key="input_limite_tag")
+        tamanho_lote = st.slider("Tamanho do lote de download", 5, 30, 10, key="slider_lote_tag")
         
         st.markdown("---")
         
-        if st.button("Voltar ao menu", use_container_width=True):
+        if st.button("Voltar ao menu", use_container_width=True, key="btn_back_tag"):
             st.session_state.page = 'main_menu'
             st.rerun()
     
     # Busca de etiquetas
-    busca = st.text_input("Nome da etiqueta", placeholder="Digite o nome da etiqueta...")
+    busca = st.text_input("Nome da etiqueta", placeholder="Digite o nome da etiqueta...", key="input_search_tag")
     
     if busca:
         with st.spinner("Buscando etiquetas..."):
@@ -582,12 +584,13 @@ def page_download_by_tag():
                     st.markdown(f"**{etiqueta.nome}**")
                 
                 with col2:
-                    if st.button("Baixar", key=f"etiqueta_{idx}", use_container_width=True):
+                    if st.button("Baixar", key=f"etiqueta_{idx}_{etiqueta.id}", use_container_width=True):
                         st.session_state.selected_tag = etiqueta
                         st.session_state.tag_limit = limite if limite > 0 else None
                         st.session_state.tag_tamanho_lote = tamanho_lote
                         st.session_state.cancelamento_solicitado = False
                         st.session_state.show_cancel_confirm = False
+                        st.session_state.processing_iteration = 0
                         st.session_state.page = 'processing_tag'
                         st.rerun()
                 
@@ -609,12 +612,13 @@ def page_download_by_number():
         tipo_documento = st.selectbox(
             "Tipo de documento",
             ["Selecione", "Petição Inicial", "Petição", "Sentença", "Decisão", "Despacho", "Acórdão", "Outros documentos"],
-            index=0
+            index=0,
+            key="select_tipo_doc"
         )
         
         st.markdown("---")
         
-        if st.button("Voltar ao menu", use_container_width=True):
+        if st.button("Voltar ao menu", use_container_width=True, key="btn_back_number"):
             st.session_state.page = 'main_menu'
             st.rerun()
     
@@ -633,7 +637,8 @@ def page_download_by_number():
     numeros_input = st.text_area(
         "Números dos processos",
         placeholder="0000001-23.2024.8.05.0001\n0000002-45.2024.8.05.0001",
-        height=150
+        height=150,
+        key="textarea_numeros"
     )
     
     if numeros_input:
@@ -669,21 +674,25 @@ def page_download_by_number():
             
             st.markdown("---")
             
-            if st.button("Iniciar download", type="primary", use_container_width=True):
+            if st.button("Iniciar download", type="primary", use_container_width=True, key="btn_start_number"):
                 st.session_state.processos_para_baixar = processos_validos
                 st.session_state.tipo_documento_numero = tipo_documento
                 st.session_state.cancelamento_solicitado = False
                 st.session_state.show_cancel_confirm = False
+                st.session_state.processing_iteration = 0
                 st.session_state.page = 'processing_number'
                 st.rerun()
     else:
         st.info("Digite pelo menos um número de processo para continuar")
 
 
-def render_processing_page(generator, title, back_page):
+def render_processing_page(generator, title, back_page, processing_type):
     """Template comum para páginas de processamento"""
     
     st.title(title)
+    
+    # Usar processing_type para criar chaves únicas
+    key_prefix = f"{processing_type}_{st.session_state.get('processing_iteration', 0)}"
     
     status_container = st.empty()
     progress_bar = st.progress(0)
@@ -703,14 +712,16 @@ def render_processing_page(generator, title, back_page):
     
     st.markdown("---")
     
-    # Controle de cancelamento
-    cancel_container = st.empty()
+    # Controle de cancelamento - FORA DO LOOP para evitar duplicação
+    cancel_placeholder = st.empty()
     
     pje = get_pje_client()
     tempo_inicio = time.time()
+    iteration = 0
     
     try:
         for estado in generator:
+            iteration += 1
             status = estado.get('status', '')
             progresso = estado.get('progresso', 0)
             total = estado.get('processos', 0)
@@ -753,25 +764,28 @@ def render_processing_page(generator, title, back_page):
                 taxa_sucesso = (estado.get('sucesso', 0) / progresso * 100) if progresso > 0 else 0
                 cols[2].metric("Taxa de sucesso", f"{taxa_sucesso:.1f}%")
             
-            # Botão de cancelamento
-            with cancel_container.container():
+            # Controle de cancelamento com chaves únicas baseadas na iteração
+            with cancel_placeholder.container():
                 if st.session_state.get('cancelamento_solicitado', False):
                     st.error("Cancelamento solicitado. Aguarde a interrupção...")
                 elif st.session_state.get('show_cancel_confirm', False):
                     st.warning("Confirmar cancelamento?")
                     col1, col2 = st.columns(2)
                     with col1:
-                        if st.button("Sim, cancelar", type="primary", use_container_width=True):
+                        if st.button("Sim, cancelar", type="primary", use_container_width=True, 
+                                   key=f"{key_prefix}_confirm_cancel_{iteration}"):
                             st.session_state.cancelamento_solicitado = True
                             st.session_state.show_cancel_confirm = False
                             pje.cancelar_processamento()
                             st.rerun()
                     with col2:
-                        if st.button("Não, continuar", use_container_width=True):
+                        if st.button("Não, continuar", use_container_width=True, 
+                                   key=f"{key_prefix}_deny_cancel_{iteration}"):
                             st.session_state.show_cancel_confirm = False
                             st.rerun()
                 else:
-                    if st.button("Cancelar processamento", use_container_width=True):
+                    if st.button("Cancelar processamento", use_container_width=True, 
+                               key=f"{key_prefix}_request_cancel_{iteration}"):
                         st.session_state.show_cancel_confirm = True
                         st.rerun()
             
@@ -797,7 +811,7 @@ def render_processing_page(generator, title, back_page):
     
     except Exception as e:
         st.error(f"Erro: {str(e)}")
-        if st.button("Voltar"):
+        if st.button("Voltar", key=f"{key_prefix}_back_error"):
             st.session_state.page = back_page
             st.rerun()
 
@@ -824,7 +838,8 @@ def page_processing_number():
     render_processing_page(
         generator,
         f"Processando {len(processos)} processo(s)",
-        'download_by_number'
+        'download_by_number',
+        'number'
     )
 
 
@@ -854,7 +869,8 @@ def page_processing_task():
     render_processing_page(
         generator,
         f"Processando tarefa: {tarefa.nome}",
-        'download_by_task'
+        'download_by_task',
+        'task'
     )
 
 
@@ -882,7 +898,8 @@ def page_processing_tag():
     render_processing_page(
         generator,
         f"Processando etiqueta: {etiqueta.nome}",
-        'download_by_tag'
+        'download_by_tag',
+        'tag'
     )
 
 
@@ -939,7 +956,7 @@ def page_result():
     col1, col2 = st.columns(2)
     
     with col1:
-        if st.button("Abrir pasta de downloads", use_container_width=True, type="primary"):
+        if st.button("Abrir pasta de downloads", use_container_width=True, type="primary", key="btn_open_result"):
             open_folder(diretorio)
     
     with col2:
@@ -948,7 +965,8 @@ def page_result():
             data=json.dumps(relatorio, ensure_ascii=False, indent=2),
             file_name=f"relatorio_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json",
             mime="application/json",
-            use_container_width=True
+            use_container_width=True,
+            key="btn_download_report"
         )
     
     # Detalhes adicionais
@@ -972,13 +990,13 @@ def page_result():
     col1, col2 = st.columns(2)
     
     with col1:
-        if st.button("Novo download", use_container_width=True, type="primary"):
+        if st.button("Novo download", use_container_width=True, type="primary", key="btn_new_download"):
             st.session_state.relatorio = None
             st.session_state.page = 'main_menu'
             st.rerun()
     
     with col2:
-        if st.button("Sair do sistema", use_container_width=True):
+        if st.button("Sair do sistema", use_container_width=True, key="btn_logout_result"):
             limpar_sessao_completa()
 
 
