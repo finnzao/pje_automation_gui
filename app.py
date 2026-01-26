@@ -12,7 +12,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 # Importar e executar a aplicação
-from ui import Application
+from ui.app.main import Application
 
 
 def main():

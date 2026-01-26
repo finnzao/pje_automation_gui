@@ -242,6 +242,156 @@ class PJEClient:
             return []
         return self._tags.listar_processos_etiqueta(id_etiqueta, limit)
     
+    # BUSCA DE PROCESSOS POR NÚMERO (NOVO)
+    
+    def buscar_processo_por_numero(
+        self,
+        numero_processo: str,
+        metodos: list = None
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Busca processo por número usando múltiplas estratégias.
+        
+        Este método é útil para encontrar processos que não estão
+        no painel de tarefas do usuário, usando a consulta pública.
+        
+        Args:
+            numero_processo: Número do processo no formato CNJ
+                            (ex: 0000001-23.2024.8.05.0001)
+            metodos: Lista de métodos de busca a usar.
+                    Default: ['busca_direta', 'consulta_publica', 'painel_tarefas', 'etiquetas']
+                    
+                    - 'busca_direta': Acessa a página de consulta pública e 
+                      extrai idProcesso e chave de acesso do resultado.
+                      É o método mais eficiente para processos fora do painel.
+                      
+                    - 'consulta_publica': Método original via página de pesquisa.
+                    
+                    - 'painel_tarefas': Busca nas tarefas do usuário.
+                    
+                    - 'etiquetas': Busca nas etiquetas do usuário.
+        
+        Returns:
+            Dict com informações do processo:
+            {
+                "id_processo": int,
+                "numero_processo": str,
+                "chave_acesso": str,
+                "metodo": str,  # Método que encontrou o processo
+                "url_autos": str  # URL completa para autos digitais
+            }
+            
+            Ou None se não encontrado.
+        
+        Example:
+            >>> info = pje.buscar_processo_por_numero("0000001-23.2024.8.05.0001")
+            >>> if info:
+            ...     print(f"ID: {info['id_processo']}")
+            ...     print(f"Chave: {info['chave_acesso']}")
+            ...     print(f"Método: {info['metodo']}")
+        """
+        if not self.ensure_logged_in():
+            return None
+        
+        from .services.process_search_service import ProcessSearchService
+        
+        search_service = ProcessSearchService(self._http)
+        
+        resultado = search_service.buscar_processo(
+            numero_processo,
+            usar_cache=True,
+            metodos=metodos
+        )
+        
+        if resultado.encontrado:
+            return {
+                "id_processo": resultado.id_processo,
+                "numero_processo": resultado.numero_processo,
+                "chave_acesso": resultado.chave_acesso,
+                "metodo": resultado.metodo_busca,
+                "url_autos": resultado.url_autos
+            }
+        
+        return None
+    
+    def acessar_autos_digitais(
+        self,
+        id_processo: int,
+        chave_acesso: str
+    ) -> Optional[str]:
+        """
+        Acessa diretamente a página de autos digitais do processo.
+        
+        Útil para acessar processos que não estão no painel de tarefas.
+        
+        Args:
+            id_processo: ID do processo
+            chave_acesso: Chave de acesso (ca)
+        
+        Returns:
+            HTML da página de autos digitais ou None se falhar
+        
+        Example:
+            >>> info = pje.buscar_processo_por_numero("0000001-23.2024.8.05.0001")
+            >>> if info:
+            ...     html = pje.acessar_autos_digitais(
+            ...         info['id_processo'], 
+            ...         info['chave_acesso']
+            ...     )
+        """
+        if not self.ensure_logged_in():
+            return None
+        
+        from .services.process_search_service import ProcessSearchService
+        
+        search_service = ProcessSearchService(self._http)
+        return search_service.acessar_processo_direto(id_processo, chave_acesso)
+    
+    def buscar_e_acessar_processo(
+        self,
+        numero_processo: str,
+        metodos: list = None
+    ) -> tuple:
+        """
+        Busca e acessa diretamente um processo.
+        
+        Combina busca + acesso direto em uma única chamada.
+        Retorna tanto as informações do processo quanto o HTML da página.
+        
+        Args:
+            numero_processo: Número do processo no formato CNJ
+            metodos: Lista de métodos de busca a usar
+        
+        Returns:
+            Tuple (info_dict, html_str) onde:
+            - info_dict: Dict com informações do processo (ou None)
+            - html_str: HTML da página de autos (ou None)
+        
+        Example:
+            >>> info, html = pje.buscar_e_acessar_processo("0000001-23.2024.8.05.0001")
+            >>> if info and html:
+            ...     print(f"Processo {info['numero_processo']} acessado com sucesso!")
+        """
+        if not self.ensure_logged_in():
+            return None, None
+        
+        from .services.process_search_service import ProcessSearchService
+        
+        search_service = ProcessSearchService(self._http)
+        resultado, html = search_service.buscar_e_acessar_processo(numero_processo)
+        
+        if resultado.encontrado:
+            info = {
+                "id_processo": resultado.id_processo,
+                "numero_processo": resultado.numero_processo,
+                "chave_acesso": resultado.chave_acesso,
+                "metodo": resultado.metodo_busca,
+                "url_autos": resultado.url_autos
+            }
+            return info, html
+        
+        return None, None
+    
     # DOWNLOADS
     
     def solicitar_download(
@@ -276,7 +426,8 @@ class PJEClient:
         numeros_processos: List[str],
         tipo_documento: str = "Selecione",
         aguardar_download: bool = True,
-        tempo_espera: int = 300
+        tempo_espera: int = 300,
+        metodos_busca: List[str] = None
     ) -> Generator[Dict[str, Any], None, Dict[str, Any]]:
         """
         Processa lista de números de processos (generator).
@@ -286,6 +437,8 @@ class PJEClient:
             tipo_documento: Tipo de documento
             aguardar_download: Se deve aguardar downloads
             tempo_espera: Tempo máximo de espera
+            metodos_busca: Lista de métodos de busca a usar
+                          Default: ['busca_direta', 'consulta_publica', 'painel_tarefas', 'etiquetas']
         
         Yields:
             Estado atual do processamento
@@ -299,7 +452,8 @@ class PJEClient:
             numeros_processos=numeros_processos,
             tipo_documento=tipo_documento,
             aguardar_download=aguardar_download,
-            tempo_espera=tempo_espera
+            tempo_espera=tempo_espera,
+            metodos_busca=metodos_busca
         ):
             # Notificar callbacks
             self._notify_progress(
@@ -315,7 +469,8 @@ class PJEClient:
         numeros_processos: List[str],
         tipo_documento: str = "Selecione",
         aguardar_download: bool = True,
-        tempo_espera: int = 300
+        tempo_espera: int = 300,
+        metodos_busca: List[str] = None
     ) -> Dict[str, Any]:
         """Processa lista de números (versão síncrona)."""
         processor = self._get_number_processor()
@@ -323,7 +478,8 @@ class PJEClient:
             numeros_processos=numeros_processos,
             tipo_documento=tipo_documento,
             aguardar_download=aguardar_download,
-            tempo_espera=tempo_espera
+            tempo_espera=tempo_espera,
+            metodos_busca=metodos_busca
         )
     
     # PROCESSAMENTO - TAREFAS

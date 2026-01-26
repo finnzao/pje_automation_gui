@@ -1,5 +1,9 @@
 """
 Processador para download de processos por número.
+
+Atualizado para usar o método de busca direta que acessa
+diretamente o endpoint de consulta pública para obter
+idProcesso e chave de acesso (ca).
 """
 
 import time
@@ -18,7 +22,8 @@ class NumberProcessor(BaseProcessor):
     Processador especializado para downloads por número de processo.
     
     Implementa:
-    - Busca de processos por número
+    - Busca de processos por número usando múltiplas estratégias
+    - Busca direta (mais eficiente para processos fora do painel)
     - Download com timeout
     - Validação de números CNJ
     """
@@ -68,7 +73,8 @@ class NumberProcessor(BaseProcessor):
     def _buscar_processo_com_timeout(
         self,
         numero: str,
-        timeout: int = None
+        timeout: int = None,
+        metodos: List[str] = None
     ) -> Optional[Dict]:
         """
         Busca processo com timeout e verificação de cancelamento.
@@ -76,6 +82,8 @@ class NumberProcessor(BaseProcessor):
         Args:
             numero: Número do processo
             timeout: Timeout em segundos (usa self.search_timeout se None)
+            metodos: Lista de métodos de busca a usar
+                    Default: ['busca_direta', 'consulta_publica', 'painel_tarefas', 'etiquetas']
         
         Returns:
             Dict com informações do processo ou None
@@ -87,8 +95,22 @@ class NumberProcessor(BaseProcessor):
         if timeout is None:
             timeout = self.search_timeout
         
+        # Métodos padrão - api_processo primeiro por ser mais confiável
+        # NOTA: etiquetas removido por ser muito lento
+        if metodos is None:
+            metodos = ['api_processo', 'painel_tarefas', 'busca_direta']
+        
+        self.logger.debug(f"[BUSCA_TIMEOUT] Iniciando busca para: {numero}")
+        self.logger.debug(f"[BUSCA_TIMEOUT] Timeout: {timeout}s, Métodos: {metodos}")
+        
         with ThreadPoolExecutor(max_workers=1) as executor:
-            future = executor.submit(self.search_service.buscar_processo, numero)
+            # Passar os métodos de busca para o serviço
+            future = executor.submit(
+                self.search_service.buscar_processo, 
+                numero,
+                True,  # usar_cache
+                metodos
+            )
             
             elapsed = 0
             check_interval = 0.5
@@ -96,6 +118,7 @@ class NumberProcessor(BaseProcessor):
             while elapsed < timeout:
                 # Verificar cancelamento
                 if self._check_cancelado():
+                    self.logger.warning(f"[BUSCA_TIMEOUT] ⚠️ Busca CANCELADA pelo usuário")
                     future.cancel()
                     raise InterruptedError(f"Busca cancelada: {numero}")
                 
@@ -104,19 +127,29 @@ class NumberProcessor(BaseProcessor):
                     
                     # Converter ResultadoBusca para dict
                     if resultado and resultado.encontrado:
+                        self.logger.info(f"[BUSCA_TIMEOUT] ✅ Processo encontrado!")
+                        self.logger.debug(f"[BUSCA_TIMEOUT]   ID: {resultado.id_processo}")
+                        self.logger.debug(f"[BUSCA_TIMEOUT]   Método: {resultado.metodo_busca}")
+                        self.logger.debug(f"[BUSCA_TIMEOUT]   CA: {resultado.chave_acesso[:30] + '...' if resultado.chave_acesso else 'N/A'}")
                         return {
                             "id_processo": resultado.id_processo,
                             "numero_processo": resultado.numero_processo,
                             "chave_acesso": resultado.chave_acesso,
-                            "metodo": resultado.metodo_busca
+                            "metodo": resultado.metodo_busca,
+                            "url_autos": resultado.url_autos
                         }
+                    
+                    self.logger.info(f"[BUSCA_TIMEOUT] ❌ Processo NÃO encontrado")
                     return None
                     
                 except FutureTimeoutError:
                     elapsed += check_interval
+                    if elapsed % 10 == 0:  # Log a cada 10 segundos
+                        self.logger.debug(f"[BUSCA_TIMEOUT] Aguardando... ({elapsed:.0f}s / {timeout}s)")
                     continue
             
             # Timeout atingido
+            self.logger.error(f"[BUSCA_TIMEOUT] ❌ TIMEOUT após {timeout}s")
             future.cancel()
             raise TimeoutError(f"Timeout ao buscar {numero}")
     
@@ -125,7 +158,8 @@ class NumberProcessor(BaseProcessor):
         numeros_processos: List[str],
         tipo_documento: str = "Selecione",
         aguardar_download: bool = True,
-        tempo_espera: int = 300
+        tempo_espera: int = 300,
+        metodos_busca: List[str] = None
     ) -> Generator[Dict[str, Any], None, Dict[str, Any]]:
         """
         Processa lista de números de processos.
@@ -135,6 +169,8 @@ class NumberProcessor(BaseProcessor):
             tipo_documento: Tipo de documento para download
             aguardar_download: Se deve aguardar downloads pendentes
             tempo_espera: Tempo máximo de espera em segundos
+            metodos_busca: Lista de métodos de busca a usar
+                          Default: ['busca_direta', 'consulta_publica', 'painel_tarefas', 'etiquetas']
         
         Yields:
             Dict com estado atual do processamento
@@ -177,32 +213,46 @@ class NumberProcessor(BaseProcessor):
             relatorio["status"] = "processando"
             
             # ============ FASE 1: BUSCAR E SOLICITAR ============
+            self.logger.info("=" * 60)
+            self.logger.info("FASE 1: BUSCAR PROCESSOS E SOLICITAR DOWNLOADS")
+            self.logger.info("=" * 60)
+            
             for i, numero in enumerate(numeros_processos, 1):
                 # Verificar cancelamento
                 self._check_cancelado_raise(f"processamento de {numero}")
                 
                 relatorio["processo_atual"] = numero
                 relatorio["progresso"] = i
-                self.logger.info(f"[{i}/{total}] Processando {numero}")
+                
+                self.logger.info("=" * 60)
+                self.logger.info(f"[{i}/{total}] Processando: {numero}")
+                self.logger.info("=" * 60)
+                
                 yield relatorio
                 
                 # Normalizar número
                 numero_norm = self._normalizar_numero(numero)
                 if not numero_norm:
-                    self.logger.error(f"Número inválido: {numero}")
+                    self.logger.error(f"[{i}/{total}] ❌ Número INVÁLIDO: {numero}")
                     relatorio["falha"] += 1
                     relatorio["erros"].append(f"Número inválido: {numero}")
                     continue
                 
+                self.logger.debug(f"[{i}/{total}] Número normalizado: {numero_norm}")
+                
                 # Buscar processo
                 relatorio["status"] = "buscando_processo"
+                self.logger.info(f"[{i}/{total}] Buscando processo...")
                 yield relatorio
                 
                 try:
-                    proc_info = self._buscar_processo_com_timeout(numero_norm)
+                    proc_info = self._buscar_processo_com_timeout(
+                        numero_norm,
+                        metodos=metodos_busca
+                    )
                     
                     if not proc_info or not proc_info.get("id_processo"):
-                        self.logger.error(f"Processo não encontrado: {numero_norm}")
+                        self.logger.error(f"[{i}/{total}] ❌ Processo NÃO ENCONTRADO: {numero_norm}")
                         relatorio["falha"] += 1
                         relatorio["erros"].append(f"Processo não encontrado: {numero_norm}")
                         relatorio["status"] = "processando"
@@ -211,6 +261,13 @@ class NumberProcessor(BaseProcessor):
                     
                     processos_info[numero_norm] = proc_info
                     
+                    # Log do método de busca utilizado
+                    metodo = proc_info.get("metodo", "desconhecido")
+                    self.logger.info(f"[{i}/{total}] ✅ Processo ENCONTRADO!")
+                    self.logger.info(f"[{i}/{total}]   Método: {metodo}")
+                    self.logger.info(f"[{i}/{total}]   ID: {proc_info['id_processo']}")
+                    self.logger.info(f"[{i}/{total}]   CA: {proc_info.get('chave_acesso', 'N/A')[:30]}...")
+                    
                     # Verificar cancelamento antes de solicitar
                     self._check_cancelado_raise(f"download de {numero_norm}")
                     
@@ -218,6 +275,7 @@ class NumberProcessor(BaseProcessor):
                     yield relatorio
                     
                     # Solicitar download
+                    self.logger.info(f"[{i}/{total}] Solicitando download...")
                     sucesso, detalhes = self.download_service.solicitar_download(
                         proc_info["id_processo"],
                         numero_norm,
@@ -226,17 +284,22 @@ class NumberProcessor(BaseProcessor):
                     )
                     
                     if sucesso:
+                        self.logger.debug(f"[{i}/{total}] Solicitação OK. Detalhes: {detalhes}")
                         if detalhes.get("arquivo_baixado"):
                             arquivo_path = Path(detalhes["arquivo_baixado"])
                             if self._verificar_arquivo_valido(arquivo_path):
                                 relatorio["arquivos"].append(str(arquivo_path))
                                 relatorio["sucesso"] += 1
-                                self.logger.success(f"Download concluído: {numero_norm}")
+                                self.logger.success(f"[{i}/{total}] ✅ Download CONCLUÍDO: {arquivo_path.name}")
                             else:
+                                self.logger.warning(f"[{i}/{total}] ⚠️ Arquivo inválido/corrompido")
                                 processos_pendentes.append(numero_norm)
                         else:
+                            self.logger.info(f"[{i}/{total}] Download pendente (será aguardado)")
                             processos_pendentes.append(numero_norm)
                     else:
+                        self.logger.error(f"[{i}/{total}] ❌ Falha ao solicitar download")
+                        self.logger.error(f"[{i}/{total}]   Detalhes: {detalhes}")
                         relatorio["falha"] += 1
                         relatorio["erros"].append(f"Falha ao solicitar: {numero_norm}")
                     
@@ -248,18 +311,28 @@ class NumberProcessor(BaseProcessor):
                     raise
                 
                 except TimeoutError as e:
-                    self.logger.error(f"Timeout: {e}")
+                    self.logger.error(f"[{i}/{total}] ❌ TIMEOUT: {e}")
                     relatorio["falha"] += 1
                     relatorio["erros"].append(f"Timeout: {numero_norm}")
                 
                 except Exception as e:
-                    self.logger.error(f"Erro ao processar {numero_norm}: {e}")
+                    self.logger.error(f"[{i}/{total}] ❌ ERRO: {type(e).__name__}: {str(e)}")
+                    import traceback
+                    self.logger.debug(f"[{i}/{total}] Traceback:\n{traceback.format_exc()}")
                     relatorio["falha"] += 1
                     relatorio["erros"].append(f"Erro em {numero_norm}: {str(e)}")
             
             # ============ FASE 2: AGUARDAR DOWNLOADS ============
+            self.logger.info("=" * 60)
+            self.logger.info("FASE 2: AGUARDAR DOWNLOADS PENDENTES")
+            self.logger.info("=" * 60)
+            
             if aguardar_download and processos_pendentes:
                 self._check_cancelado_raise("aguardar downloads")
+                
+                self.logger.info(f"Processos pendentes: {len(processos_pendentes)}")
+                for p in processos_pendentes:
+                    self.logger.debug(f"  - {p}")
                 
                 relatorio["status"] = "aguardando_downloads"
                 relatorio["processo_atual"] = f"Aguardando {len(processos_pendentes)} downloads"
@@ -271,12 +344,22 @@ class NumberProcessor(BaseProcessor):
                     tempo_espera=tempo_espera
                 )
                 
+                self.logger.info(f"Arquivos baixados na fase 2: {len(arquivos)}")
+                
                 for arq in arquivos:
                     if arq not in relatorio["arquivos"]:
                         relatorio["arquivos"].append(arq)
                         relatorio["sucesso"] += 1
+                        self.logger.success(f"✅ Download concluído (pendente): {arq}")
+            else:
+                if not processos_pendentes:
+                    self.logger.info("Nenhum download pendente")
             
             # ============ FASE 3: VERIFICAR INTEGRIDADE ============
+            self.logger.info("=" * 60)
+            self.logger.info("FASE 3: VERIFICAR INTEGRIDADE")
+            self.logger.info("=" * 60)
+            
             self._check_cancelado_raise("verificação de integridade")
             
             relatorio["status"] = "verificando_integridade"
@@ -284,12 +367,26 @@ class NumberProcessor(BaseProcessor):
             yield relatorio
             
             processos_esperados = list(processos_info.keys())
+            self.logger.info(f"Processos esperados: {len(processos_esperados)}")
+            self.logger.info(f"Arquivos baixados: {len(relatorio['arquivos'])}")
+            
             integridade = self._verificar_integridade(processos_esperados, diretorio)
             relatorio["integridade"] = integridade["integridade"]
             processos_faltantes = integridade["processos_faltantes"]
             
-            # ============ FASE 4: RETRIES ============
+            self.logger.info(f"Integridade: {integridade['integridade']}")
             if processos_faltantes:
+                self.logger.warning(f"Processos faltantes: {len(processos_faltantes)}")
+                for p in processos_faltantes:
+                    self.logger.warning(f"  - {p}")
+            
+            # ============ FASE 4: RETRIES ============
+            self.logger.info("=" * 60)
+            self.logger.info("FASE 4: RETRIES (se necessário)")
+            self.logger.info("=" * 60)
+            
+            if processos_faltantes:
+                self.logger.info(f"Tentando retry para {len(processos_faltantes)} processos faltantes")
                 processos_faltantes = self._executar_retries(
                     processos_faltantes,
                     processos_info,
@@ -299,15 +396,37 @@ class NumberProcessor(BaseProcessor):
                 )
                 
                 if processos_faltantes:
+                    self.logger.error(f"❌ {len(processos_faltantes)} processos falharam após retries:")
+                    for p in processos_faltantes:
+                        self.logger.error(f"  - {p}")
                     relatorio["retries"]["processos_falha_definitiva"] = processos_faltantes
+                else:
+                    self.logger.success("✅ Todos os retries concluídos com sucesso!")
+            else:
+                self.logger.info("Nenhum retry necessário")
             
             # ============ FINALIZAÇÃO ============
+            self.logger.info("=" * 60)
+            self.logger.info("FINALIZAÇÃO")
+            self.logger.info("=" * 60)
+            
             relatorio = self._finalizar_relatorio(
                 relatorio,
                 diretorio,
                 processos_esperados,
                 cancelado=False
             )
+            
+            self.logger.info(f"Status final: {relatorio['status']}")
+            self.logger.info(f"Sucesso: {relatorio['sucesso']}")
+            self.logger.info(f"Falha: {relatorio['falha']}")
+            self.logger.info(f"Arquivos: {len(relatorio['arquivos'])}")
+            self.logger.info(f"Integridade: {relatorio['integridade']}")
+            
+            if relatorio['erros']:
+                self.logger.warning(f"Erros encontrados: {len(relatorio['erros'])}")
+                for erro in relatorio['erros'][:10]:  # Mostrar até 10 erros
+                    self.logger.warning(f"  - {erro}")
             
             yield relatorio
             return relatorio

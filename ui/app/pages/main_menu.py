@@ -20,7 +20,7 @@ class MainMenuPage(BasePage):
         col1, col2, col3 = st.columns(3)
         
         with col1:
-            st.subheader("📋 Download por Tarefa")
+            st.subheader("Download por Tarefa")
             st.markdown(
                 "Baixar processos vinculados a uma tarefa específica do sistema"
             )
@@ -33,7 +33,7 @@ class MainMenuPage(BasePage):
                 self._navigation.go_to_download_by_task()
         
         with col2:
-            st.subheader("🏷️ Download por Etiqueta")
+            st.subheader("Download por Etiqueta")
             st.markdown(
                 "Baixar processos marcados com uma etiqueta específica"
             )
@@ -46,7 +46,7 @@ class MainMenuPage(BasePage):
                 self._navigation.go_to_download_by_tag()
         
         with col3:
-            st.subheader("🔢 Download por Número")
+            st.subheader("Download por Número")
             st.markdown(
                 "Baixar processo(s) informando o número CNJ completo"
             )
