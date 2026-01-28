@@ -17,11 +17,12 @@ class DownloadBySubjectPage(BasePage):
     2. Analisar assuntos dos processos (armazena dados completos para download direto)
     3. Selecionar assunto e baixar
     
-    CORREÇÕES IMPLEMENTADAS:
-    - Cache de tarefas na Etapa 1 (evita requisições desnecessárias)
-    - Lógica de duplicatas usando idProcesso ao invés de numeroProcesso
+    CORREÇÕES IMPLEMENTADAS (v2):
+    - Set GLOBAL para detectar duplicatas entre TODAS as tarefas
+    - Usa idProcesso como identificador principal (mais confiável)
+    - Fallback para numeroProcesso quando idProcesso não disponível
     - Logging detalhado para debug
-    - Dados completos armazenados para download direto
+    - Cache de tarefas para evitar requisições desnecessárias
     """
     
     PAGE_TITLE = "Download por Assunto"
@@ -34,13 +35,6 @@ class DownloadBySubjectPage(BasePage):
         Isso evita ter que buscar novamente no momento do download.
         
         IMPORTANTE: Armazena idProcesso que será usado para download direto.
-        
-        Campos importantes para download direto:
-        - idProcesso: ID interno do processo (ESSENCIAL para download)
-        - numeroProcesso: Número CNJ
-        - idTaskInstance: ID da instância da tarefa
-        - nomeTarefa: Nome da tarefa onde está
-        - assuntoPrincipal: Assunto principal
         """
         data = {
             'numeroProcesso': None,
@@ -54,8 +48,8 @@ class DownloadBySubjectPage(BasePage):
             'orgaoJulgador': None,
             'sigiloso': False,
             'prioridade': False,
-            'ca': None,  # Chave de acesso se disponível
-            '_raw': None,  # Dados brutos originais
+            'ca': None,
+            '_raw': None,
         }
         
         # Se é dicionário (dados brutos da API)
@@ -104,7 +98,6 @@ class DownloadBySubjectPage(BasePage):
                 raw = getattr(processo, raw_attr, None)
                 if isinstance(raw, dict):
                     data['_raw'] = raw
-                    # Preencher campos faltantes do raw
                     for target_field, source_fields in field_mappings.items():
                         if data[target_field] is None:
                             for source in source_fields:
@@ -207,25 +200,20 @@ class DownloadBySubjectPage(BasePage):
         self._state.set("assuntos_analisados", [])
         self._state.set("tarefas_para_analise", [])
         self._state.set("selected_subject", None)
-        # NÃO limpar cache de tarefas aqui para evitar requisições desnecessárias
     
     def _load_tasks(self, force_refresh: bool = False) -> List:
         """
         Carrega lista de tarefas disponíveis.
-        
-        CORREÇÃO: Usa cache do session_state para evitar requisições desnecessárias.
-        Só faz nova requisição se force_refresh=True ou cache vazio.
+        Usa cache do session_state para evitar requisições desnecessárias.
         """
         cache_key = "subject_tasks_cache"
         
-        # Verificar cache primeiro
         if not force_refresh:
             cached_tasks = self._state.get(cache_key, [])
             if cached_tasks:
                 logger.debug(f"[LOAD_TASKS] Usando cache: {len(cached_tasks)} tarefas")
                 return cached_tasks
         
-        # Fazer requisição apenas se necessário
         logger.info("[LOAD_TASKS] Carregando tarefas da API...")
         
         try:
@@ -236,8 +224,6 @@ class DownloadBySubjectPage(BasePage):
                 tasks = client.listar_tarefas(force=True)
             
             tasks = tasks if tasks else []
-            
-            # Salvar no cache
             self._state.set(cache_key, tasks)
             logger.info(f"[LOAD_TASKS] Carregadas {len(tasks)} tarefas da API")
             
@@ -248,25 +234,19 @@ class DownloadBySubjectPage(BasePage):
             return []
     
     def _render_step1_select_tasks(self) -> None:
-        """
-        Etapa 1: Selecionar tarefas a ignorar.
-        
-        CORREÇÃO: Cache de tarefas para evitar requisições a cada checkbox.
-        """
+        """Etapa 1: Selecionar tarefas a ignorar."""
         st.header("Etapa 1: Selecionar Tarefas")
         st.markdown(
             "Selecione as tarefas que deseja **ignorar** na análise de assuntos. "
             "Tarefas favoritas são automaticamente ignoradas."
         )
         
-        # Botão para forçar atualização
         col_refresh, col_spacer = st.columns([1, 3])
         with col_refresh:
             if st.button("🔄 Atualizar lista", key="refresh_tasks_btn"):
                 self._state.set("subject_tasks_cache", [])
                 st.rerun()
         
-        # Carregar tarefas do cache ou API
         tasks = self._load_tasks(force_refresh=False)
         
         if not tasks:
@@ -290,7 +270,6 @@ class DownloadBySubjectPage(BasePage):
         else:
             tasks_filtered = tasks
         
-        # Usar cache para tarefas ignoradas
         tarefas_ignoradas = self._state.get("tarefas_ignoradas", [])
         
         st.markdown(f"**Total de tarefas:** {len(tasks_filtered)}")
@@ -315,7 +294,6 @@ class DownloadBySubjectPage(BasePage):
         
         st.markdown("---")
         
-        # Usar form para evitar reruns a cada checkbox
         with st.form(key="tasks_selection_form"):
             new_ignoradas = []
             
@@ -352,7 +330,6 @@ class DownloadBySubjectPage(BasePage):
                         label += f" ({task.quantidade_pendente} processos)"
                     st.markdown(label)
             
-            # Botão de submissão do form
             submitted = st.form_submit_button("Confirmar seleção", use_container_width=True)
             
             if submitted:
@@ -488,10 +465,11 @@ class DownloadBySubjectPage(BasePage):
         Análise que armazena dados completos dos processos.
         Isso permite download direto sem buscar novamente.
         
-        CORREÇÕES:
-        - Usa idProcesso para detectar duplicatas (não numeroProcesso)
-        - Logging detalhado para debug
-        - Mantém todos os processos mesmo com número duplicado se tiverem IDs diferentes
+        CORREÇÃO PRINCIPAL (v2):
+        - Usa SET GLOBAL para detectar duplicatas entre TODAS as tarefas
+        - idProcesso é o identificador principal (mais confiável)
+        - Fallback para numeroProcesso quando idProcesso não disponível
+        - O mesmo processo pode aparecer em múltiplas tarefas, mas será contado apenas uma vez
         """
         client = self.session_service.client
         tarefas_ignoradas = self._state.get("tarefas_ignoradas", [])
@@ -505,23 +483,31 @@ class DownloadBySubjectPage(BasePage):
             if t.nome not in tarefas_ignoradas
         ]
         
-        logger.info(f"[ANALYSIS] Total de tarefas: {len(todas_tarefas)}")
+        logger.info(f"[ANALYSIS] ===== INICIANDO ANÁLISE =====")
+        logger.info(f"[ANALYSIS] Total de tarefas disponíveis: {len(todas_tarefas)}")
         logger.info(f"[ANALYSIS] Tarefas ignoradas: {len(tarefas_ignoradas)}")
         logger.info(f"[ANALYSIS] Tarefas a analisar: {len(tarefas_para_analisar)}")
         
         # Dicionário para agrupar por assunto
         assuntos_dict: Dict[str, Dict] = {}
         
+        # ========== CORREÇÃO PRINCIPAL ==========
+        # Sets GLOBAIS para detectar duplicatas entre TODAS as tarefas
+        ids_globais_vistos: set = set()      # idProcesso (identificador principal)
+        numeros_globais_vistos: set = set()  # numeroProcesso (fallback)
+        # =========================================
+        
         # Estatísticas detalhadas
         stats = {
             'total_tarefas': len(tarefas_para_analisar),
             'tarefas_processadas': 0,
-            'total_processos_encontrados': 0,
+            'total_processos_api': 0,          # Total retornado pela API
             'processos_com_id': 0,
             'processos_sem_id': 0,
             'processos_adicionados': 0,
-            'processos_duplicados_por_id': 0,
-            'processos_duplicados_por_numero': 0,
+            'duplicatas_por_id': 0,            # Duplicatas detectadas por idProcesso
+            'duplicatas_por_numero': 0,        # Duplicatas detectadas por número (fallback)
+            'duplicatas_por_tarefa': {},       # Contagem por tarefa (debug)
         }
         
         total_tarefas = len(tarefas_para_analisar)
@@ -532,15 +518,16 @@ class DownloadBySubjectPage(BasePage):
             
             logger.info(f"[ANALYSIS] [{idx+1}/{total_tarefas}] Tarefa: {tarefa.nome}")
             
+            duplicatas_nesta_tarefa = 0
+            
             try:
                 # Listar processos da tarefa
                 processos = client.listar_processos_tarefa(tarefa.nome)
                 
-                logger.info(f"[ANALYSIS]   Processos retornados: {len(processos)}")
+                logger.info(f"[ANALYSIS]   Processos retornados pela API: {len(processos)}")
+                stats['total_processos_api'] += len(processos)
                 
                 for processo in processos:
-                    stats['total_processos_encontrados'] += 1
-                    
                     # Extrair TODOS os dados relevantes do processo
                     processo_data = self._extract_processo_data(processo)
                     
@@ -553,80 +540,127 @@ class DownloadBySubjectPage(BasePage):
                     numero = self._get_numero_from_processo_data(processo_data)
                     assunto_nome = self._get_assunto_from_processo_data(processo_data)
                     
-                    # Verificar se tem ID (importante para download direto)
+                    # Verificar se tem ID
                     if id_processo:
                         stats['processos_com_id'] += 1
                     else:
                         stats['processos_sem_id'] += 1
-                        logger.warning(f"[ANALYSIS]   Processo sem ID: {numero}")
+                        if numero:
+                            logger.debug(f"[ANALYSIS]   ⚠️ Processo sem ID: {numero}")
+                    
+                    # ========== CORREÇÃO: Verificação de duplicata GLOBAL ==========
+                    is_duplicata = False
+                    
+                    if id_processo:
+                        # Usar idProcesso como identificador principal
+                        if id_processo in ids_globais_vistos:
+                            is_duplicata = True
+                            stats['duplicatas_por_id'] += 1
+                            duplicatas_nesta_tarefa += 1
+                            logger.debug(
+                                f"[ANALYSIS]   ⚠️ DUPLICATA (ID): {numero} "
+                                f"(idProcesso={id_processo}) - já visto anteriormente"
+                            )
+                        else:
+                            ids_globais_vistos.add(id_processo)
+                    else:
+                        # Fallback: usar número do processo
+                        if numero:
+                            if numero in numeros_globais_vistos:
+                                is_duplicata = True
+                                stats['duplicatas_por_numero'] += 1
+                                duplicatas_nesta_tarefa += 1
+                                logger.debug(
+                                    f"[ANALYSIS]   ⚠️ DUPLICATA (número): {numero} "
+                                    f"- já visto anteriormente"
+                                )
+                            else:
+                                numeros_globais_vistos.add(numero)
+                        else:
+                            # Sem ID nem número - não podemos verificar duplicata
+                            logger.warning(
+                                f"[ANALYSIS]   ⚠️ Processo sem ID nem número - "
+                                f"impossível verificar duplicata"
+                            )
+                    
+                    if is_duplicata:
+                        continue  # Pular duplicatas
+                    # ================================================================
                     
                     # Criar entrada para o assunto se não existir
                     if assunto_nome not in assuntos_dict:
                         assuntos_dict[assunto_nome] = {
                             'nome': assunto_nome,
                             'processos': [],
-                            'ids_vistos': set(),      # Para detectar duplicatas por ID
-                            'numeros_vistos': set(),  # Para log de números duplicados
                             'quantidade': 0
                         }
                     
-                    assunto_entry = assuntos_dict[assunto_nome]
-                    
-                    # CORREÇÃO: Usar idProcesso para detectar duplicatas (é mais confiável)
-                    if id_processo:
-                        if id_processo in assunto_entry['ids_vistos']:
-                            stats['processos_duplicados_por_id'] += 1
-                            logger.debug(f"[ANALYSIS]   Duplicata por ID: {id_processo} ({numero})")
-                            continue
-                        assunto_entry['ids_vistos'].add(id_processo)
-                    else:
-                        # Fallback: usar número se não tiver ID
-                        if numero and numero in assunto_entry['numeros_vistos']:
-                            stats['processos_duplicados_por_numero'] += 1
-                            logger.debug(f"[ANALYSIS]   Duplicata por número: {numero}")
-                            continue
-                    
-                    # Registrar número visto (para log)
-                    if numero:
-                        assunto_entry['numeros_vistos'].add(numero)
-                    
-                    # Adicionar processo
-                    assunto_entry['processos'].append(processo_data)
-                    assunto_entry['quantidade'] += 1
+                    # Adicionar processo ao assunto
+                    assuntos_dict[assunto_nome]['processos'].append(processo_data)
+                    assuntos_dict[assunto_nome]['quantidade'] += 1
                     stats['processos_adicionados'] += 1
                     
             except Exception as e:
-                logger.error(f"[ANALYSIS]   Erro ao analisar tarefa {tarefa.nome}: {str(e)}")
+                logger.error(f"[ANALYSIS]   ❌ Erro ao analisar tarefa {tarefa.nome}: {str(e)}")
                 st.warning(f"Erro ao analisar tarefa {tarefa.nome}: {str(e)}")
                 continue
+            
+            # Registrar duplicatas por tarefa (para debug)
+            if duplicatas_nesta_tarefa > 0:
+                stats['duplicatas_por_tarefa'][tarefa.nome] = duplicatas_nesta_tarefa
+                logger.info(
+                    f"[ANALYSIS]   📊 Resumo tarefa: {duplicatas_nesta_tarefa} duplicatas ignoradas"
+                )
             
             # Atualizar estatísticas na UI
             if stats_container:
                 with stats_container.container():
                     col1, col2, col3, col4 = st.columns(4)
                     with col1:
-                        st.metric("Encontrados", stats['total_processos_encontrados'])
+                        st.metric("API Total", stats['total_processos_api'])
                     with col2:
-                        st.metric("Adicionados", stats['processos_adicionados'])
+                        st.metric("Únicos", stats['processos_adicionados'])
                     with col3:
-                        st.metric("Com ID", stats['processos_com_id'])
+                        total_dup = stats['duplicatas_por_id'] + stats['duplicatas_por_numero']
+                        st.metric("Duplicatas", total_dup)
                     with col4:
                         st.metric("Assuntos", len(assuntos_dict))
         
-        # Log final de estatísticas
+        # ========== Log final de estatísticas ==========
+        total_duplicatas = stats['duplicatas_por_id'] + stats['duplicatas_por_numero']
+        
         logger.info(f"[ANALYSIS] ===== ESTATÍSTICAS FINAIS =====")
-        logger.info(f"[ANALYSIS] Total processos encontrados: {stats['total_processos_encontrados']}")
-        logger.info(f"[ANALYSIS] Processos adicionados: {stats['processos_adicionados']}")
-        logger.info(f"[ANALYSIS] Processos com ID: {stats['processos_com_id']}")
-        logger.info(f"[ANALYSIS] Processos sem ID: {stats['processos_sem_id']}")
-        logger.info(f"[ANALYSIS] Duplicatas por ID: {stats['processos_duplicados_por_id']}")
-        logger.info(f"[ANALYSIS] Duplicatas por número: {stats['processos_duplicados_por_numero']}")
+        logger.info(f"[ANALYSIS] Total processos retornados pela API: {stats['total_processos_api']}")
+        logger.info(f"[ANALYSIS] Processos únicos adicionados: {stats['processos_adicionados']}")
+        logger.info(f"[ANALYSIS] Total duplicatas removidas: {total_duplicatas}")
+        logger.info(f"[ANALYSIS]   - Por idProcesso: {stats['duplicatas_por_id']}")
+        logger.info(f"[ANALYSIS]   - Por número (fallback): {stats['duplicatas_por_numero']}")
+        logger.info(f"[ANALYSIS] Processos com idProcesso: {stats['processos_com_id']}")
+        logger.info(f"[ANALYSIS] Processos sem idProcesso: {stats['processos_sem_id']}")
         logger.info(f"[ANALYSIS] Total assuntos: {len(assuntos_dict)}")
         
-        # Remover sets antes de retornar (não são serializáveis)
-        for assunto in assuntos_dict.values():
-            del assunto['ids_vistos']
-            del assunto['numeros_vistos']
+        # Log das tarefas com mais duplicatas
+        if stats['duplicatas_por_tarefa']:
+            logger.info(f"[ANALYSIS] Tarefas com duplicatas:")
+            for tarefa_nome, count in sorted(
+                stats['duplicatas_por_tarefa'].items(), 
+                key=lambda x: x[1], 
+                reverse=True
+            )[:10]:  # Top 10
+                logger.info(f"[ANALYSIS]   - {tarefa_nome}: {count}")
+        
+        # Validação: Total deve bater
+        expected_total = stats['processos_adicionados'] + total_duplicatas
+        if expected_total != stats['total_processos_api']:
+            logger.warning(
+                f"[ANALYSIS] ⚠️ Inconsistência: API={stats['total_processos_api']}, "
+                f"Adicionados+Duplicatas={expected_total}"
+            )
+        else:
+            logger.info(f"[ANALYSIS] ✅ Contagem consistente: {stats['total_processos_api']} = "
+                       f"{stats['processos_adicionados']} + {total_duplicatas}")
+        
+        logger.info(f"[ANALYSIS] ===== FIM DA ANÁLISE =====")
         
         # Converter para lista e ordenar por quantidade
         assuntos_list = list(assuntos_dict.values())
@@ -638,7 +672,7 @@ class DownloadBySubjectPage(BasePage):
         """Mostra resultado da análise."""
         total_processos = sum(self._get_assunto_quantidade(a) for a in assuntos)
         
-        # Contar processos com ID (prontos para download direto)
+        # Contar processos com ID
         processos_com_id = 0
         processos_sem_id = 0
         for assunto in assuntos:
@@ -771,7 +805,6 @@ class DownloadBySubjectPage(BasePage):
     
     def _handle_subject_selection(self, assunto) -> None:
         """Processa a seleção de um assunto para download."""
-        # Garantir que assunto é dicionário com dados completos
         if not isinstance(assunto, dict):
             assunto = {
                 'nome': self._get_assunto_nome(assunto),
@@ -782,7 +815,6 @@ class DownloadBySubjectPage(BasePage):
         logger.info(f"[SELECT] Assunto selecionado: {assunto.get('nome')}")
         logger.info(f"[SELECT] Quantidade de processos: {assunto.get('quantidade')}")
         
-        # Contar processos com ID
         processos = assunto.get('processos', [])
         com_id = sum(1 for p in processos if p.get('idProcesso'))
         logger.info(f"[SELECT] Processos com ID (download direto): {com_id}")
