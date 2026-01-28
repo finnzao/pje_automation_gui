@@ -3,9 +3,9 @@ from typing import Optional, List, Dict, Any, Callable, Generator
 
 from .config import DEFAULT_TIMEOUT
 from .core import SessionManager, PJEHttpClient
-from .services import AuthService, TaskService, TagService, DownloadService
-from .processors import NumberProcessor, TaskProcessor, TagProcessor
-from .models import Usuario, Perfil, Tarefa, ProcessoTarefa, Etiqueta, Processo, DownloadDisponivel
+from .services import AuthService, TaskService, TagService, DownloadService, SubjectService
+from .processors import NumberProcessor, TaskProcessor, TagProcessor, SubjectProcessor
+from .models import Usuario, Perfil, Tarefa, ProcessoTarefa, Etiqueta, Processo, DownloadDisponivel, AssuntoPrincipal
 from .utils import get_logger
 
 
@@ -50,11 +50,13 @@ class PJEClient:
         self._tasks = TaskService(self._http)
         self._tags = TagService(self._http)
         self._downloads = DownloadService(self._http, self.download_dir)
+        self._subjects: Optional[SubjectService] = None
         
         # Processadores (lazy initialization)
         self._number_processor: Optional[NumberProcessor] = None
         self._task_processor: Optional[TaskProcessor] = None
         self._tag_processor: Optional[TagProcessor] = None
+        self._subject_processor: Optional[SubjectProcessor] = None
         
         # Callbacks
         self._progress_callback: Optional[Callable[[int, int, str, str], None]] = None
@@ -88,7 +90,6 @@ class PJEClient:
     def _get_number_processor(self) -> NumberProcessor:
         """Obtém processador de números (lazy initialization)."""
         if self._number_processor is None:
-            # Importar aqui para evitar import circular
             from .services.process_search_service import ProcessSearchService
             
             search_service = ProcessSearchService(self._http)
@@ -119,6 +120,21 @@ class PJEClient:
             )
         return self._tag_processor
     
+    def _get_subject_service(self) -> SubjectService:
+        """Obtém serviço de assuntos (lazy initialization)."""
+        if self._subjects is None:
+            self._subjects = SubjectService(self._http, self._tasks)
+        return self._subjects
+    
+    def _get_subject_processor(self) -> SubjectProcessor:
+        """Obtém processador de assuntos (lazy initialization)."""
+        if self._subject_processor is None:
+            self._subject_processor = SubjectProcessor(
+                self._downloads,
+                self.download_dir
+            )
+        return self._subject_processor
+    
     # AUTENTICAÇÃO
     
     def login(
@@ -141,10 +157,8 @@ class PJEClient:
             True se login bem-sucedido
         """
         if validar_saude:
-            # Usar login com validação automática
             return self._auth.login_com_validacao(username, password, force)
         else:
-            # Login tradicional
             return self._auth.login(username, password, force)
     
     def limpar_sessao(self):
@@ -180,6 +194,8 @@ class PJEClient:
         result = self._auth.select_profile(nome)
         if result:
             self._tasks.limpar_cache()
+            if self._subjects:
+                self._subjects.limpar_cache()
         return result
     
     def select_profile_by_index(self, index: int) -> bool:
@@ -187,6 +203,8 @@ class PJEClient:
         result = self._auth.select_profile_by_index(index)
         if result:
             self._tasks.limpar_cache()
+            if self._subjects:
+                self._subjects.limpar_cache()
             self.logger.info(f"Cache de tarefas limpo após seleção de perfil")
         return result
     
@@ -242,7 +260,93 @@ class PJEClient:
             return []
         return self._tags.listar_processos_etiqueta(id_etiqueta, limit)
     
-    # BUSCA DE PROCESSOS POR NÚMERO (NOVO)
+    # ASSUNTOS PRINCIPAIS (NOVO)
+    
+    def listar_tarefas_para_analise(self, force: bool = False) -> List[Tarefa]:
+        """
+        Lista todas as tarefas disponíveis para análise de assuntos.
+        
+        Args:
+            force: Forçar atualização
+        
+        Returns:
+            Lista de tarefas (não favoritas)
+        """
+        if not self.ensure_logged_in():
+            return []
+        return self._get_subject_service().listar_tarefas_disponiveis(force)
+    
+    def definir_tarefas_ignoradas(self, nomes_tarefas: List[str]) -> None:
+        """
+        Define quais tarefas serão ignoradas na análise de assuntos.
+        
+        Args:
+            nomes_tarefas: Lista de nomes de tarefas a ignorar
+        """
+        self._get_subject_service().definir_tarefas_ignoradas(nomes_tarefas)
+    
+    def analisar_assuntos(
+        self,
+        callback_progresso: callable = None
+    ) -> Dict[str, AssuntoPrincipal]:
+        """
+        Analisa e agrupa processos por assunto principal.
+        
+        Args:
+            callback_progresso: Callback para progresso (tarefa, idx, total)
+        
+        Returns:
+            Dict com assuntos e seus processos
+        """
+        if not self.ensure_logged_in():
+            return {}
+        return self._get_subject_service().analisar_assuntos_por_tarefas(
+            callback_progresso=callback_progresso
+        )
+    
+    def buscar_assuntos(self, termo: str) -> List[AssuntoPrincipal]:
+        """
+        Busca assuntos pelo nome.
+        
+        Args:
+            termo: Termo de busca
+        
+        Returns:
+            Lista de assuntos
+        """
+        return self._get_subject_service().buscar_assunto(termo)
+    
+    def listar_todos_assuntos(self) -> List[AssuntoPrincipal]:
+        """
+        Lista todos os assuntos analisados.
+        
+        Returns:
+            Lista de assuntos
+        """
+        return self._get_subject_service().listar_todos_assuntos()
+    
+    def obter_assunto(self, nome: str) -> Optional[AssuntoPrincipal]:
+        """
+        Obtém assunto específico pelo nome.
+        
+        Args:
+            nome: Nome do assunto
+        
+        Returns:
+            AssuntoPrincipal ou None
+        """
+        return self._get_subject_service().obter_assunto(nome)
+    
+    def obter_estatisticas_assuntos(self) -> Dict[str, int]:
+        """
+        Retorna estatísticas dos assuntos.
+        
+        Returns:
+            Dict com estatísticas
+        """
+        return self._get_subject_service().get_estatisticas()
+    
+    # BUSCA DE PROCESSOS POR NÚMERO
     
     def buscar_processo_por_numero(
         self,
@@ -251,44 +355,6 @@ class PJEClient:
     ) -> Optional[Dict[str, Any]]:
         """
         Busca processo por número usando múltiplas estratégias.
-        
-        Este método é útil para encontrar processos que não estão
-        no painel de tarefas do usuário, usando a consulta pública.
-        
-        Args:
-            numero_processo: Número do processo no formato CNJ
-                            (ex: 0000001-23.2024.8.05.0001)
-            metodos: Lista de métodos de busca a usar.
-                    Default: ['busca_direta', 'consulta_publica', 'painel_tarefas', 'etiquetas']
-                    
-                    - 'busca_direta': Acessa a página de consulta pública e 
-                      extrai idProcesso e chave de acesso do resultado.
-                      É o método mais eficiente para processos fora do painel.
-                      
-                    - 'consulta_publica': Método original via página de pesquisa.
-                    
-                    - 'painel_tarefas': Busca nas tarefas do usuário.
-                    
-                    - 'etiquetas': Busca nas etiquetas do usuário.
-        
-        Returns:
-            Dict com informações do processo:
-            {
-                "id_processo": int,
-                "numero_processo": str,
-                "chave_acesso": str,
-                "metodo": str,  # Método que encontrou o processo
-                "url_autos": str  # URL completa para autos digitais
-            }
-            
-            Ou None se não encontrado.
-        
-        Example:
-            >>> info = pje.buscar_processo_por_numero("0000001-23.2024.8.05.0001")
-            >>> if info:
-            ...     print(f"ID: {info['id_processo']}")
-            ...     print(f"Chave: {info['chave_acesso']}")
-            ...     print(f"Método: {info['metodo']}")
         """
         if not self.ensure_logged_in():
             return None
@@ -319,26 +385,7 @@ class PJEClient:
         id_processo: int,
         chave_acesso: str
     ) -> Optional[str]:
-        """
-        Acessa diretamente a página de autos digitais do processo.
-        
-        Útil para acessar processos que não estão no painel de tarefas.
-        
-        Args:
-            id_processo: ID do processo
-            chave_acesso: Chave de acesso (ca)
-        
-        Returns:
-            HTML da página de autos digitais ou None se falhar
-        
-        Example:
-            >>> info = pje.buscar_processo_por_numero("0000001-23.2024.8.05.0001")
-            >>> if info:
-            ...     html = pje.acessar_autos_digitais(
-            ...         info['id_processo'], 
-            ...         info['chave_acesso']
-            ...     )
-        """
+        """Acessa diretamente a página de autos digitais do processo."""
         if not self.ensure_logged_in():
             return None
         
@@ -352,26 +399,7 @@ class PJEClient:
         numero_processo: str,
         metodos: list = None
     ) -> tuple:
-        """
-        Busca e acessa diretamente um processo.
-        
-        Combina busca + acesso direto em uma única chamada.
-        Retorna tanto as informações do processo quanto o HTML da página.
-        
-        Args:
-            numero_processo: Número do processo no formato CNJ
-            metodos: Lista de métodos de busca a usar
-        
-        Returns:
-            Tuple (info_dict, html_str) onde:
-            - info_dict: Dict com informações do processo (ou None)
-            - html_str: HTML da página de autos (ou None)
-        
-        Example:
-            >>> info, html = pje.buscar_e_acessar_processo("0000001-23.2024.8.05.0001")
-            >>> if info and html:
-            ...     print(f"Processo {info['numero_processo']} acessado com sucesso!")
-        """
+        """Busca e acessa diretamente um processo."""
         if not self.ensure_logged_in():
             return None, None
         
@@ -429,23 +457,7 @@ class PJEClient:
         tempo_espera: int = 300,
         metodos_busca: List[str] = None
     ) -> Generator[Dict[str, Any], None, Dict[str, Any]]:
-        """
-        Processa lista de números de processos (generator).
-        
-        Args:
-            numeros_processos: Lista de números CNJ
-            tipo_documento: Tipo de documento
-            aguardar_download: Se deve aguardar downloads
-            tempo_espera: Tempo máximo de espera
-            metodos_busca: Lista de métodos de busca a usar
-                          Default: ['busca_direta', 'consulta_publica', 'painel_tarefas', 'etiquetas']
-        
-        Yields:
-            Estado atual do processamento
-        
-        Returns:
-            Relatório final
-        """
+        """Processa lista de números de processos (generator)."""
         processor = self._get_number_processor()
         
         for estado in processor.processar_generator(
@@ -455,7 +467,6 @@ class PJEClient:
             tempo_espera=tempo_espera,
             metodos_busca=metodos_busca
         ):
-            # Notificar callbacks
             self._notify_progress(
                 estado.get("progresso", 0),
                 estado.get("processos", 0),
@@ -495,25 +506,7 @@ class PJEClient:
         usar_favoritas: bool = False,
         tamanho_lote: int = 10
     ) -> Generator[Dict[str, Any], None, Dict[str, Any]]:
-        """
-        Processa tarefa (generator).
-        
-        Args:
-            nome_tarefa: Nome da tarefa
-            perfil: Nome do perfil (opcional)
-            tipo_documento: Tipo de documento
-            limite: Limite de processos
-            aguardar_download: Se deve aguardar downloads
-            tempo_espera: Tempo máximo de espera
-            usar_favoritas: Se deve buscar em favoritas
-            tamanho_lote: Tamanho do lote para downloads
-        
-        Yields:
-            Estado atual
-        
-        Returns:
-            Relatório final
-        """
+        """Processa tarefa (generator)."""
         if perfil and not self.select_profile(perfil):
             yield {
                 "status": "erro",
@@ -574,24 +567,7 @@ class PJEClient:
         tempo_espera: int = 300,
         tamanho_lote: int = 10
     ) -> Generator[Dict[str, Any], None, Dict[str, Any]]:
-        """
-        Processa etiqueta (generator).
-        
-        Args:
-            nome_etiqueta: Nome da etiqueta
-            perfil: Nome do perfil (opcional)
-            tipo_documento: Tipo de documento
-            limite: Limite de processos
-            aguardar_download: Se deve aguardar downloads
-            tempo_espera: Tempo máximo de espera
-            tamanho_lote: Tamanho do lote
-        
-        Yields:
-            Estado atual
-        
-        Returns:
-            Relatório final
-        """
+        """Processa etiqueta (generator)."""
         if perfil and not self.select_profile(perfil):
             yield {
                 "status": "erro",
@@ -638,13 +614,86 @@ class PJEClient:
             relatorio = estado
         return relatorio
     
+    # PROCESSAMENTO - ASSUNTOS (NOVO)
+    
+    def processar_assunto_generator(
+        self,
+        nome_assunto: str,
+        tipo_documento: str = "Selecione",
+        limite: int = None,
+        aguardar_download: bool = True,
+        tempo_espera: int = 300,
+        tamanho_lote: int = 10
+    ) -> Generator[Dict[str, Any], None, Dict[str, Any]]:
+        """
+        Processa assunto principal (generator).
+        
+        Args:
+            nome_assunto: Nome do assunto
+            tipo_documento: Tipo de documento
+            limite: Limite de processos
+            aguardar_download: Se deve aguardar downloads
+            tempo_espera: Tempo máximo de espera
+            tamanho_lote: Tamanho do lote
+        
+        Yields:
+            Estado atual
+        
+        Returns:
+            Relatório final
+        """
+        # Obter assunto
+        assunto = self.obter_assunto(nome_assunto)
+        
+        if not assunto:
+            yield {
+                "status": "erro",
+                "erros": [f"Assunto não encontrado: {nome_assunto}"],
+                "processos": 0,
+                "sucesso": 0,
+                "falha": 0
+            }
+            return
+        
+        processor = self._get_subject_processor()
+        processor.tamanho_lote = tamanho_lote
+        
+        for estado in processor.processar_generator(
+            assunto=assunto,
+            limite=limite,
+            tipo_documento=tipo_documento,
+            aguardar_download=aguardar_download,
+            tempo_espera=tempo_espera
+        ):
+            self._notify_progress(
+                estado.get("progresso", 0),
+                estado.get("processos", 0),
+                estado.get("processo_atual", ""),
+                estado.get("status", "")
+            )
+            yield estado
+    
+    def processar_assunto(
+        self,
+        nome_assunto: str,
+        tipo_documento: str = "Selecione",
+        limite: int = None,
+        aguardar_download: bool = True,
+        tempo_espera: int = 300
+    ) -> Dict[str, Any]:
+        """Processa assunto (versão síncrona)."""
+        relatorio = None
+        for estado in self.processar_assunto_generator(
+            nome_assunto, tipo_documento, limite,
+            aguardar_download, tempo_espera
+        ):
+            relatorio = estado
+        return relatorio
+    
     # CANCELAMENTO
     
     def cancelar_processamento(self):
-        """
-        Cancela processamento atual.
-        Thread-safe e efetivo.
-        """
+        """Cancela processamento atual. Thread-safe e efetivo."""
         self.logger.warning("🛑 Solicitando cancelamento...")
         
         # Cancelar em todos os processadores
@@ -654,12 +703,13 @@ class PJEClient:
             self._task_processor.cancelar()
         if self._tag_processor:
             self._tag_processor.cancelar()
+        if self._subject_processor:
+            self._subject_processor.cancelar()
         
         # Tentar interromper sessão HTTP
         try:
             self._http.session.close()
             
-            # Recriar sessão
             import requests
             from .config import DEFAULT_HEADERS
             self._http.session = requests.Session()

@@ -12,9 +12,6 @@ from .session_service import PJESessionService
 class DownloadManagerService:
     """
     Serviço responsável pelo gerenciamento de downloads.
-    
-    Orquestra o processo de download, fornecendo
-    uma interface simplificada para a UI.
     """
     
     def __init__(
@@ -22,13 +19,6 @@ class DownloadManagerService:
         state_manager: SessionStateManager,
         session_service: PJESessionService
     ):
-        """
-        Inicializa o serviço.
-        
-        Args:
-            state_manager: Gerenciador de estado
-            session_service: Serviço de sessão PJE
-        """
         self._state = state_manager
         self._session = session_service
     
@@ -47,24 +37,7 @@ class DownloadManagerService:
         wait_download: bool = True,
         timeout: int = 300
     ) -> Generator[Dict[str, Any], None, Dict[str, Any]]:
-        """
-        Processa downloads de uma tarefa.
-        
-        Args:
-            task_name: Nome da tarefa
-            use_favorites: Se usa favoritas
-            limit: Limite de processos
-            batch_size: Tamanho do lote
-            document_type: Tipo de documento
-            wait_download: Se aguarda downloads
-            timeout: Tempo máximo de espera
-        
-        Yields:
-            Estado atual do processamento
-        
-        Returns:
-            Relatório final
-        """
+        """Processa downloads de uma tarefa."""
         client = self._session.client
         
         for state in client.processar_tarefa_generator(
@@ -76,7 +49,6 @@ class DownloadManagerService:
             tempo_espera=timeout,
             tamanho_lote=batch_size
         ):
-            # Verificar cancelamento
             if self._state.is_cancellation_requested:
                 client.cancelar_processamento()
             
@@ -91,23 +63,7 @@ class DownloadManagerService:
         wait_download: bool = True,
         timeout: int = 300
     ) -> Generator[Dict[str, Any], None, Dict[str, Any]]:
-        """
-        Processa downloads de uma etiqueta.
-        
-        Args:
-            tag_name: Nome da etiqueta
-            limit: Limite de processos
-            batch_size: Tamanho do lote
-            document_type: Tipo de documento
-            wait_download: Se aguarda downloads
-            timeout: Tempo máximo de espera
-        
-        Yields:
-            Estado atual do processamento
-        
-        Returns:
-            Relatório final
-        """
+        """Processa downloads de uma etiqueta."""
         client = self._session.client
         
         for state in client.processar_etiqueta_generator(
@@ -130,21 +86,7 @@ class DownloadManagerService:
         wait_download: bool = True,
         timeout: int = 300
     ) -> Generator[Dict[str, Any], None, Dict[str, Any]]:
-        """
-        Processa downloads por números de processo.
-        
-        Args:
-            process_numbers: Lista de números
-            document_type: Tipo de documento
-            wait_download: Se aguarda downloads
-            timeout: Tempo máximo de espera
-        
-        Yields:
-            Estado atual do processamento
-        
-        Returns:
-            Relatório final
-        """
+        """Processa downloads por números de processo."""
         client = self._session.client
         
         for state in client.processar_numeros_generator(
@@ -158,6 +100,47 @@ class DownloadManagerService:
             
             yield state
     
+    def process_subject_generator(
+        self,
+        subject_name: str,
+        limit: Optional[int] = None,
+        batch_size: int = 10,
+        document_type: str = "Selecione",
+        wait_download: bool = True,
+        timeout: int = 300
+    ) -> Generator[Dict[str, Any], None, Dict[str, Any]]:
+        """
+        Processa downloads de um assunto principal.
+        
+        Args:
+            subject_name: Nome do assunto
+            limit: Limite de processos
+            batch_size: Tamanho do lote
+            document_type: Tipo de documento
+            wait_download: Se aguarda downloads
+            timeout: Tempo máximo de espera
+        
+        Yields:
+            Estado atual do processamento
+        
+        Returns:
+            Relatório final
+        """
+        client = self._session.client
+        
+        for state in client.processar_assunto_generator(
+            nome_assunto=subject_name,
+            limite=limit,
+            tipo_documento=document_type,
+            aguardar_download=wait_download,
+            tempo_espera=timeout,
+            tamanho_lote=batch_size
+        ):
+            if self._state.is_cancellation_requested:
+                client.cancelar_processamento()
+            
+            yield state
+    
     def cancel_processing(self) -> None:
         """Cancela processamento atual."""
         self._state.is_cancellation_requested = True
@@ -165,15 +148,7 @@ class DownloadManagerService:
     
     @staticmethod
     def open_folder(path: str) -> bool:
-        """
-        Abre pasta no explorador de arquivos.
-        
-        Args:
-            path: Caminho da pasta
-        
-        Returns:
-            True se abriu com sucesso
-        """
+        """Abre pasta no explorador de arquivos."""
         folder_path = Path(path)
         
         if not folder_path.exists():
@@ -184,9 +159,9 @@ class DownloadManagerService:
             
             if system == "Windows":
                 os.startfile(str(folder_path))
-            elif system == "Darwin":  # macOS
+            elif system == "Darwin":
                 subprocess.Popen(["open", str(folder_path)])
-            else:  # Linux
+            else:
                 subprocess.Popen(["xdg-open", str(folder_path)])
             
             return True
@@ -196,12 +171,7 @@ class DownloadManagerService:
     
     @staticmethod
     def get_report_filename() -> str:
-        """
-        Gera nome de arquivo para relatório.
-        
-        Returns:
-            Nome do arquivo
-        """
+        """Gera nome de arquivo para relatório."""
         from datetime import datetime
         timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
         return f"relatorio_{timestamp}.json"

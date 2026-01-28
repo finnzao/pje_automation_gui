@@ -42,9 +42,11 @@ class PageConfig:
     DOWNLOAD_BY_TASK: str = "download_by_task"
     DOWNLOAD_BY_TAG: str = "download_by_tag"
     DOWNLOAD_BY_NUMBER: str = "download_by_number"
+    DOWNLOAD_BY_SUBJECT: str = "download_by_subject"
     PROCESSING_TASK: str = "processing_task"
     PROCESSING_TAG: str = "processing_tag"
     PROCESSING_NUMBER: str = "processing_number"
+    PROCESSING_SUBJECT: str = "processing_subject"
     RESULT: str = "result"
     
     @classmethod
@@ -57,9 +59,11 @@ class PageConfig:
             cls.DOWNLOAD_BY_TASK,
             cls.DOWNLOAD_BY_TAG,
             cls.DOWNLOAD_BY_NUMBER,
+            cls.DOWNLOAD_BY_SUBJECT,
             cls.PROCESSING_TASK,
             cls.PROCESSING_TAG,
             cls.PROCESSING_NUMBER,
+            cls.PROCESSING_SUBJECT,
             cls.RESULT,
         ]
 
@@ -74,6 +78,8 @@ class StatusConfig:
     BUSCANDO_ETIQUETA: str = "buscando_etiqueta"
     BUSCANDO_PROCESSO: str = "buscando_processo"
     LISTANDO_PROCESSOS: str = "listando_processos"
+    LISTANDO_TAREFAS: str = "listando_tarefas"
+    ANALISANDO_ASSUNTOS: str = "analisando_assuntos"
     PROCESSANDO: str = "processando"
     BAIXANDO_LOTE: str = "baixando_lote"
     AGUARDANDO_DOWNLOADS: str = "aguardando_downloads"
@@ -94,6 +100,8 @@ class StatusConfig:
             cls.BUSCANDO_ETIQUETA: "Buscando etiqueta",
             cls.BUSCANDO_PROCESSO: "Buscando processo",
             cls.LISTANDO_PROCESSOS: "Listando processos",
+            cls.LISTANDO_TAREFAS: "Listando tarefas",
+            cls.ANALISANDO_ASSUNTOS: "Analisando assuntos",
             cls.PROCESSANDO: "Processando",
             cls.BAIXANDO_LOTE: "Baixando arquivos",
             cls.AGUARDANDO_DOWNLOADS: "Aguardando downloads",

@@ -26,6 +26,12 @@ class SessionStateDefaults:
     # Tarefas
     tarefas: List = field(default_factory=list)
     tarefas_favoritas: List = field(default_factory=list)
+    tarefas_para_analise: List = field(default_factory=list)
+    
+    # Assuntos
+    tarefas_ignoradas: List = field(default_factory=list)
+    assuntos_analisados: List = field(default_factory=list)
+    subject_step: int = 1
     
     # Cliente PJE
     pje_client: Any = None
@@ -57,6 +63,11 @@ class SessionStateDefaults:
     processos_para_baixar: List[str] = field(default_factory=list)
     tipo_documento_numero: str = "Selecione"
     
+    # Download por assunto
+    selected_subject: Any = None
+    subject_limit: Optional[int] = None
+    subject_tamanho_lote: int = APP_CONFIG.DEFAULT_BATCH_SIZE
+    
     def to_dict(self) -> Dict[str, Any]:
         """Converte para dicionário."""
         return {
@@ -67,6 +78,10 @@ class SessionStateDefaults:
             "perfis": self.perfis,
             "tarefas": self.tarefas,
             "tarefas_favoritas": self.tarefas_favoritas,
+            "tarefas_para_analise": self.tarefas_para_analise,
+            "tarefas_ignoradas": self.tarefas_ignoradas,
+            "assuntos_analisados": self.assuntos_analisados,
+            "subject_step": self.subject_step,
             "pje_client": self.pje_client,
             "relatorio": self.relatorio,
             "download_dir": self.download_dir,
@@ -83,15 +98,15 @@ class SessionStateDefaults:
             "tag_tamanho_lote": self.tag_tamanho_lote,
             "processos_para_baixar": self.processos_para_baixar,
             "tipo_documento_numero": self.tipo_documento_numero,
+            "selected_subject": self.selected_subject,
+            "subject_limit": self.subject_limit,
+            "subject_tamanho_lote": self.subject_tamanho_lote,
         }
 
 
 class SessionStateManager:
     """
     Gerenciador centralizado do estado da sessão.
-    
-    Fornece interface type-safe para acessar e modificar
-    o estado do Streamlit.
     """
     
     def __init__(self):
@@ -113,58 +128,25 @@ class SessionStateManager:
         self._initialized = True
     
     def get(self, key: str, default: Any = None) -> Any:
-        """
-        Obtém valor do estado.
-        
-        Args:
-            key: Chave do estado
-            default: Valor padrão se não existir
-        
-        Returns:
-            Valor do estado ou default
-        """
+        """Obtém valor do estado."""
         return st.session_state.get(key, default)
     
     def set(self, key: str, value: Any) -> None:
-        """
-        Define valor no estado.
-        
-        Args:
-            key: Chave do estado
-            value: Valor a definir
-        """
+        """Define valor no estado."""
         st.session_state[key] = value
     
     def update(self, **kwargs) -> None:
-        """
-        Atualiza múltiplos valores no estado.
-        
-        Args:
-            **kwargs: Pares chave-valor para atualizar
-        """
+        """Atualiza múltiplos valores no estado."""
         for key, value in kwargs.items():
             st.session_state[key] = value
     
     def delete(self, key: str) -> None:
-        """
-        Remove valor do estado.
-        
-        Args:
-            key: Chave a remover
-        """
+        """Remove valor do estado."""
         if key in st.session_state:
             del st.session_state[key]
     
     def has(self, key: str) -> bool:
-        """
-        Verifica se chave existe no estado.
-        
-        Args:
-            key: Chave a verificar
-        
-        Returns:
-            True se existir
-        """
+        """Verifica se chave existe no estado."""
         return key in st.session_state
     
     def clear(self) -> None:
@@ -256,4 +238,14 @@ class SessionStateManager:
             cancelamento_solicitado=False,
             show_cancel_confirm=False,
             processing_iteration=0,
+        )
+    
+    def reset_subject_state(self) -> None:
+        """Reseta estado do fluxo de assuntos."""
+        self.update(
+            subject_step=1,
+            tarefas_ignoradas=[],
+            assuntos_analisados=[],
+            tarefas_para_analise=[],
+            selected_subject=None,
         )

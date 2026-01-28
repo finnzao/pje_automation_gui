@@ -2,7 +2,6 @@
 PJE Lib - Biblioteca compartilhada para automacao do PJE.
 """
 
-import os
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -16,18 +15,18 @@ from .client import PJEClient
 from .config import (
     BASE_URL, SSO_URL, API_BASE,
     TIPO_DOCUMENTO_VALUES,
-    DEFAULT_TIMEOUT, DEFAULT_DELAY_MIN, DEFAULT_DELAY_MAX,
 )
 from .models import (
     Usuario, Perfil, Tarefa, ProcessoTarefa,
     Etiqueta, Processo, DownloadDisponivel,
-    DiagnosticoDownload,
+    DiagnosticoDownload, AssuntoPrincipal,
 )
 
-__version__ = "2.1.0"
+__version__ = "1.0.0"
 __all__ = [
     "PJEClient",
     "BASE_URL", "SSO_URL", "API_BASE", "TIPO_DOCUMENTO_VALUES",
     "Usuario", "Perfil", "Tarefa", "ProcessoTarefa",
     "Etiqueta", "Processo", "DownloadDisponivel", "DiagnosticoDownload",
+    "AssuntoPrincipal",
 ]

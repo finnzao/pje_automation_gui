@@ -3,7 +3,7 @@ Modelos de dados compartilhados do sistema PJE.
 """
 
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from typing import Dict, List
 
 
 @dataclass
@@ -75,6 +75,7 @@ class ProcessoTarefa:
     polo_ativo: str = ""
     polo_passivo: str = ""
     classe_judicial: str = ""
+    assunto_principal: str = ""
     
     @classmethod
     def from_dict(cls, data: dict) -> "ProcessoTarefa":
@@ -84,7 +85,8 @@ class ProcessoTarefa:
             id_task_instance=data.get("idTaskInstance", 0),
             polo_ativo=data.get("poloAtivo", ""),
             polo_passivo=data.get("poloPassivo", ""),
-            classe_judicial=data.get("classeJudicial", "")
+            classe_judicial=data.get("classeJudicial", ""),
+            assunto_principal=data.get("assuntoPrincipal", "")
         )
 
 
@@ -190,3 +192,20 @@ class DiagnosticoDownload:
     sucesso: bool
     mensagem: str
     detalhes: Dict = field(default_factory=dict)
+
+
+@dataclass
+class AssuntoPrincipal:
+    """Assunto principal com lista de processos."""
+    nome: str
+    processos: List[ProcessoTarefa] = field(default_factory=list)
+    
+    @property
+    def quantidade(self) -> int:
+        return len(self.processos)
+    
+    def adicionar_processo(self, processo: ProcessoTarefa) -> None:
+        """Adiciona processo se não existir."""
+        numeros_existentes = {p.numero_processo for p in self.processos}
+        if processo.numero_processo not in numeros_existentes:
+            self.processos.append(processo)

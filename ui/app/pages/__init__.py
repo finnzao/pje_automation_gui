@@ -5,7 +5,8 @@ from .main_menu import MainMenuPage
 from .download_by_task import DownloadByTaskPage
 from .download_by_tag import DownloadByTagPage
 from .download_by_number import DownloadByNumberPage
-from .processing import ProcessingTaskPage, ProcessingTagPage, ProcessingNumberPage
+from .download_by_subject import DownloadBySubjectPage
+from .processing import ProcessingTaskPage, ProcessingTagPage, ProcessingNumberPage, ProcessingSubjectPage
 from .result import ResultPage
 
 __all__ = [
@@ -16,8 +17,10 @@ __all__ = [
     "DownloadByTaskPage",
     "DownloadByTagPage",
     "DownloadByNumberPage",
+    "DownloadBySubjectPage",
     "ProcessingTaskPage",
     "ProcessingTagPage",
     "ProcessingNumberPage",
+    "ProcessingSubjectPage",
     "ResultPage",
 ]

@@ -12,9 +12,11 @@ from .pages import (
     DownloadByTaskPage,
     DownloadByTagPage,
     DownloadByNumberPage,
+    DownloadBySubjectPage,
     ProcessingTaskPage,
     ProcessingTagPage,
     ProcessingNumberPage,
+    ProcessingSubjectPage,
     ResultPage,
 )
 
@@ -63,9 +65,11 @@ class Application:
             PAGE_CONFIG.DOWNLOAD_BY_TASK: DownloadByTaskPage,
             PAGE_CONFIG.DOWNLOAD_BY_TAG: DownloadByTagPage,
             PAGE_CONFIG.DOWNLOAD_BY_NUMBER: DownloadByNumberPage,
+            PAGE_CONFIG.DOWNLOAD_BY_SUBJECT: DownloadBySubjectPage,
             PAGE_CONFIG.PROCESSING_TASK: ProcessingTaskPage,
             PAGE_CONFIG.PROCESSING_TAG: ProcessingTagPage,
             PAGE_CONFIG.PROCESSING_NUMBER: ProcessingNumberPage,
+            PAGE_CONFIG.PROCESSING_SUBJECT: ProcessingSubjectPage,
             PAGE_CONFIG.RESULT: ResultPage,
         }
     

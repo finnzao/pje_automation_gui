@@ -8,40 +8,20 @@ from ..state.session_state import SessionStateManager
 class NavigationService:
     """
     Serviço responsável pela navegação entre páginas.
-    
-    Centraliza toda lógica de transição de páginas,
-    garantindo que o estado seja mantido corretamente.
     """
     
     def __init__(self, state_manager: SessionStateManager):
-        """
-        Inicializa o serviço de navegação.
-        
-        Args:
-            state_manager: Gerenciador de estado da sessão
-        """
         self._state = state_manager
     
     def navigate_to(self, page: str, **kwargs) -> None:
-        """
-        Navega para uma página específica.
-        
-        Args:
-            page: Nome da página de destino
-            **kwargs: Dados adicionais para passar à página
-        """
-        # Validar página
+        """Navega para uma página específica."""
         if page not in PAGE_CONFIG.get_all():
             raise ValueError(f"Página inválida: {page}")
         
-        # Atualizar estado com dados adicionais
         if kwargs:
             self._state.update(**kwargs)
         
-        # Definir página atual
         self._state.current_page = page
-        
-        # Forçar rerun do Streamlit
         st.rerun()
     
     def go_to_login(self) -> None:
@@ -68,6 +48,14 @@ class NavigationService:
         """Navega para download por número."""
         self.navigate_to(PAGE_CONFIG.DOWNLOAD_BY_NUMBER)
     
+    def go_to_download_by_subject(self) -> None:
+        """Navega para download por assunto."""
+        # Resetar estado do fluxo de assuntos
+        self._state.set("subject_step", 1)
+        self._state.set("tarefas_ignoradas", [])
+        self._state.set("assuntos_analisados", [])
+        self.navigate_to(PAGE_CONFIG.DOWNLOAD_BY_SUBJECT)
+    
     def go_to_processing_task(
         self,
         task: Any,
@@ -75,15 +63,7 @@ class NavigationService:
         use_favorites: bool = False,
         batch_size: int = 10
     ) -> None:
-        """
-        Navega para processamento de tarefa.
-        
-        Args:
-            task: Tarefa selecionada
-            limit: Limite de processos
-            use_favorites: Se usa favoritas
-            batch_size: Tamanho do lote
-        """
+        """Navega para processamento de tarefa."""
         self._state.reset_processing_state()
         self.navigate_to(
             PAGE_CONFIG.PROCESSING_TASK,
@@ -99,14 +79,7 @@ class NavigationService:
         limit: Optional[int] = None,
         batch_size: int = 10
     ) -> None:
-        """
-        Navega para processamento de etiqueta.
-        
-        Args:
-            tag: Etiqueta selecionada
-            limit: Limite de processos
-            batch_size: Tamanho do lote
-        """
+        """Navega para processamento de etiqueta."""
         self._state.reset_processing_state()
         self.navigate_to(
             PAGE_CONFIG.PROCESSING_TAG,
@@ -120,13 +93,7 @@ class NavigationService:
         processes: list,
         document_type: str = "Selecione"
     ) -> None:
-        """
-        Navega para processamento por número.
-        
-        Args:
-            processes: Lista de números de processos
-            document_type: Tipo de documento
-        """
+        """Navega para processamento por número."""
         self._state.reset_processing_state()
         self.navigate_to(
             PAGE_CONFIG.PROCESSING_NUMBER,
@@ -134,13 +101,23 @@ class NavigationService:
             tipo_documento_numero=document_type,
         )
     
+    def go_to_processing_subject(
+        self,
+        assunto: Any,
+        limit: Optional[int] = None,
+        batch_size: int = 10
+    ) -> None:
+        """Navega para processamento por assunto."""
+        self._state.reset_processing_state()
+        self.navigate_to(
+            PAGE_CONFIG.PROCESSING_SUBJECT,
+            selected_subject=assunto,
+            subject_limit=limit,
+            subject_tamanho_lote=batch_size,
+        )
+    
     def go_to_result(self, report: Dict[str, Any]) -> None:
-        """
-        Navega para página de resultado.
-        
-        Args:
-            report: Relatório do processamento
-        """
+        """Navega para página de resultado."""
         self._state.reset_processing_state()
         self.navigate_to(
             PAGE_CONFIG.RESULT,
@@ -148,11 +125,7 @@ class NavigationService:
         )
     
     def go_back(self) -> None:
-        """
-        Navega para página anterior baseado no contexto.
-        
-        Implementa lógica de navegação "voltar" inteligente.
-        """
+        """Navega para página anterior baseado no contexto."""
         current = self._state.current_page
         
         back_mapping = {
@@ -161,9 +134,11 @@ class NavigationService:
             PAGE_CONFIG.DOWNLOAD_BY_TASK: PAGE_CONFIG.MAIN_MENU,
             PAGE_CONFIG.DOWNLOAD_BY_TAG: PAGE_CONFIG.MAIN_MENU,
             PAGE_CONFIG.DOWNLOAD_BY_NUMBER: PAGE_CONFIG.MAIN_MENU,
+            PAGE_CONFIG.DOWNLOAD_BY_SUBJECT: PAGE_CONFIG.MAIN_MENU,
             PAGE_CONFIG.PROCESSING_TASK: PAGE_CONFIG.DOWNLOAD_BY_TASK,
             PAGE_CONFIG.PROCESSING_TAG: PAGE_CONFIG.DOWNLOAD_BY_TAG,
             PAGE_CONFIG.PROCESSING_NUMBER: PAGE_CONFIG.DOWNLOAD_BY_NUMBER,
+            PAGE_CONFIG.PROCESSING_SUBJECT: PAGE_CONFIG.DOWNLOAD_BY_SUBJECT,
             PAGE_CONFIG.RESULT: PAGE_CONFIG.MAIN_MENU,
         }
         
@@ -176,15 +151,7 @@ class NavigationService:
         return self._state.current_page
     
     def is_on_page(self, page: str) -> bool:
-        """
-        Verifica se está em uma página específica.
-        
-        Args:
-            page: Nome da página
-        
-        Returns:
-            True se estiver na página
-        """
+        """Verifica se está em uma página específica."""
         return self._state.current_page == page
     
     def is_on_processing_page(self) -> bool:
@@ -193,4 +160,5 @@ class NavigationService:
             PAGE_CONFIG.PROCESSING_TASK,
             PAGE_CONFIG.PROCESSING_TAG,
             PAGE_CONFIG.PROCESSING_NUMBER,
+            PAGE_CONFIG.PROCESSING_SUBJECT,
         ]

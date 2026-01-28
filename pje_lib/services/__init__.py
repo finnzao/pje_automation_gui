@@ -4,5 +4,6 @@ from .auth_service import AuthService
 from .task_service import TaskService
 from .tag_service import TagService
 from .download_service import DownloadService
+from .subject_service import SubjectService
 
-__all__ = ["AuthService", "TaskService", "TagService", "DownloadService"]
+__all__ = ["AuthService", "TaskService", "TagService", "DownloadService", "SubjectService"]
