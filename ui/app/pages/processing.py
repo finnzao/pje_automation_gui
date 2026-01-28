@@ -1,10 +1,14 @@
 import streamlit as st
 import time
+import os
+import re
+from datetime import datetime
+from pathlib import Path
 from typing import Dict, Any, Generator, Optional, List
 from abc import abstractmethod
 
 from .base import BasePage, ProcessingPageBase
-from ..config import PAGE_CONFIG, STATUS_CONFIG
+from ..config import PAGE_CONFIG, STATUS_CONFIG, APP_CONFIG
 from ..components.progress import (
     ProgressBar,
     ProcessingStatus,
@@ -188,12 +192,10 @@ class ProcessingTaskPage(BaseProcessingPage):
         return PAGE_CONFIG.DOWNLOAD_BY_TASK
     
     def _validate_params(self) -> bool:
-        """Valida se há tarefa selecionada."""
         task = self._state.get("selected_task")
         return task is not None
     
     def _get_generator(self):
-        """Retorna generator de processamento de tarefa."""
         task = self._state.get("selected_task")
         limit = self._state.get("task_limit")
         use_favorites = self._state.get("task_usar_favoritas", False)
@@ -208,20 +210,16 @@ class ProcessingTaskPage(BaseProcessingPage):
         )
     
     def _render_header(self) -> None:
-        """Renderiza cabeçalho com nome da tarefa."""
         task = self._state.get("selected_task")
         task_name = task.nome if task else "Desconhecida"
-        
         st.title(f"📋 Processando: {task_name}")
         st.markdown("---")
     
     def _render_content(self) -> None:
-        """Renderiza conteúdo da página."""
         if not self._validate_params():
             st.error("Nenhuma tarefa selecionada")
             self._navigation.go_to_download_by_task()
             return
-        
         generator = self._get_generator()
         self._run_processing_loop(generator, "task")
 
@@ -235,12 +233,10 @@ class ProcessingTagPage(BaseProcessingPage):
         return PAGE_CONFIG.DOWNLOAD_BY_TAG
     
     def _validate_params(self) -> bool:
-        """Valida se há etiqueta selecionada."""
         tag = self._state.get("selected_tag")
         return tag is not None
     
     def _get_generator(self):
-        """Retorna generator de processamento de etiqueta."""
         tag = self._state.get("selected_tag")
         limit = self._state.get("tag_limit")
         batch_size = self._state.get("tag_tamanho_lote", 10)
@@ -253,20 +249,16 @@ class ProcessingTagPage(BaseProcessingPage):
         )
     
     def _render_header(self) -> None:
-        """Renderiza cabeçalho com nome da etiqueta."""
         tag = self._state.get("selected_tag")
         tag_name = tag.nome if tag else "Desconhecida"
-        
         st.title(f"🏷️ Processando: {tag_name}")
         st.markdown("---")
     
     def _render_content(self) -> None:
-        """Renderiza conteúdo da página."""
         if not self._validate_params():
             st.error("Nenhuma etiqueta selecionada")
             self._navigation.go_to_download_by_tag()
             return
-        
         generator = self._get_generator()
         self._run_processing_loop(generator, "tag")
 
@@ -280,12 +272,10 @@ class ProcessingNumberPage(BaseProcessingPage):
         return PAGE_CONFIG.DOWNLOAD_BY_NUMBER
     
     def _validate_params(self) -> bool:
-        """Valida se há processos para baixar."""
         processes = self._state.get("processos_para_baixar", [])
         return len(processes) > 0
     
     def _get_generator(self):
-        """Retorna generator de processamento por número."""
         processes = self._state.get("processos_para_baixar", [])
         document_type = self._state.get("tipo_documento_numero", "Selecione")
         
@@ -296,34 +286,52 @@ class ProcessingNumberPage(BaseProcessingPage):
         )
     
     def _render_header(self) -> None:
-        """Renderiza cabeçalho com quantidade de processos."""
         processes = self._state.get("processos_para_baixar", [])
         count = len(processes)
-        
         st.title(f"🔢 Processando {count} processo(s)")
         st.markdown("---")
     
     def _render_content(self) -> None:
-        """Renderiza conteúdo da página."""
         if not self._validate_params():
             st.error("Nenhum processo para baixar")
             self._navigation.go_to_download_by_number()
             return
-        
         generator = self._get_generator()
         self._run_processing_loop(generator, "number")
 
 
 class ProcessingSubjectPage(BaseProcessingPage):
-    """Página de processamento de download por assunto principal."""
+    """
+    Página de processamento de download por assunto principal.
+    Usa processar_numeros_generator (método que funciona) com pasta personalizada.
+    """
     
     PAGE_TITLE = "Processando Assunto"
     
     def _get_back_page(self) -> str:
         return PAGE_CONFIG.DOWNLOAD_BY_SUBJECT
     
+    @staticmethod
+    def _sanitize_folder_name(name: str) -> str:
+        """Remove caracteres inválidos para nomes de pasta."""
+        invalid_chars = r'[\\/:*?"<>|]'
+        sanitized = re.sub(invalid_chars, '_', name)
+        sanitized = ' '.join(sanitized.split())
+        if len(sanitized) > 100:
+            sanitized = sanitized[:100]
+        return sanitized.strip()
+    
+    @staticmethod
+    def _create_subject_folder(subject_name: str, base_dir: str) -> str:
+        """Cria pasta para downloads do assunto: NomeDoAssunto_(YYYYMMDD_HHMMSS)"""
+        safe_name = ProcessingSubjectPage._sanitize_folder_name(subject_name)
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        folder_name = f"{safe_name}_({timestamp})"
+        folder_path = os.path.join(base_dir, folder_name)
+        os.makedirs(folder_path, exist_ok=True)
+        return folder_path
+    
     def _get_subject_name(self, subject) -> str:
-        """Obtém nome do assunto de forma segura."""
         if subject is None:
             return "Desconhecido"
         if isinstance(subject, dict):
@@ -333,22 +341,18 @@ class ProcessingSubjectPage(BaseProcessingPage):
         return str(subject)
     
     def _get_subject_quantidade(self, subject) -> int:
-        """Obtém quantidade de processos do assunto de forma segura."""
         if subject is None:
             return 0
         if isinstance(subject, dict):
             return subject.get('quantidade', len(subject.get('processos', [])))
         if hasattr(subject, 'quantidade'):
             qty = subject.quantidade
-            if callable(qty):
-                return qty()
-            return qty if qty is not None else 0
+            return qty() if callable(qty) else (qty or 0)
         if hasattr(subject, 'processos'):
             return len(subject.processos or [])
         return 0
     
-    def _get_subject_processos(self, subject) -> list:
-        """Obtém lista de processos do assunto de forma segura."""
+    def _get_subject_processos(self, subject) -> List[Dict]:
         if subject is None:
             return []
         if isinstance(subject, dict):
@@ -358,44 +362,33 @@ class ProcessingSubjectPage(BaseProcessingPage):
         return []
     
     def _get_numero_processo(self, processo) -> str:
-        """Obtém número do processo de forma segura."""
-        field_names = ['numeroProcesso', 'numero_processo', 'numero', 'number']
-        
+        """Obtém número do processo dos dados em cache."""
         if isinstance(processo, dict):
-            for field in field_names:
-                if field in processo and processo[field]:
-                    return str(processo[field])
-            return str(processo)
+            return processo.get('numeroProcesso', '') or processo.get('numero_processo', '') or ''
         
-        for field in field_names:
+        for field in ['numeroProcesso', 'numero_processo', 'numero']:
             if hasattr(processo, field):
                 value = getattr(processo, field, None)
                 if value:
                     return str(value)
-        
         return str(processo)
     
     def _validate_params(self) -> bool:
-        """Valida se há assunto selecionado."""
         subject = self._state.get("selected_subject")
         return subject is not None
     
     def _get_generator(self):
-        """
-        Retorna generator de processamento de assunto.
-        Usa os processos diretamente do assunto selecionado.
-        """
+        """Retorna generator usando processar_numeros_generator (que funciona)."""
         subject = self._state.get("selected_subject")
         limit = self._state.get("subject_limit", 0)
         batch_size = self._state.get("subject_tamanho_lote", 10)
         
-        # Usar processamento direto com os processos já coletados
-        return self._process_subject_directly(subject, limit, batch_size)
+        return self._process_subject(subject, limit, batch_size)
     
-    def _process_subject_directly(self, subject, limit, batch_size):
+    def _process_subject(self, subject, limit, batch_size):
         """
-        Processa os processos do assunto diretamente.
-        Usa os processos já coletados na análise.
+        Processa downloads usando processar_numeros_generator.
+        Extrai números dos dados em cache e usa o método que já funciona.
         """
         processos = self._get_subject_processos(subject)
         subject_name = self._get_subject_name(subject)
@@ -418,6 +411,10 @@ class ProcessingSubjectPage(BaseProcessingPage):
         
         total = len(processos)
         
+        # Criar pasta para este download
+        base_dir = self._state.get("download_dir", APP_CONFIG.DOWNLOAD_DIR)
+        download_folder = self._create_subject_folder(subject_name, base_dir)
+        
         yield {
             "status": "Iniciando",
             "progresso": 0,
@@ -425,25 +422,44 @@ class ProcessingSubjectPage(BaseProcessingPage):
             "sucesso": 0,
             "falhas": 0,
             "arquivos": [],
-            "processo_atual": ""
+            "processo_atual": "",
+            "pasta_download": download_folder
         }
         
-        sucesso = 0
-        falhas = 0
-        arquivos = []
-        
-        client = self.session_service.client
-        
-        # Extrair números dos processos primeiro
+        # Extrair números dos processos do cache
         numeros_processos = []
         for processo in processos:
             numero = self._get_numero_processo(processo)
             if numero:
                 numeros_processos.append(numero)
         
-        # Usar o método processar_numeros_generator se disponível
-        if hasattr(client, 'processar_numeros_generator'):
-            try:
+        if not numeros_processos:
+            yield {
+                "status": "Erro",
+                "progresso": 0,
+                "processos": 0,
+                "sucesso": 0,
+                "falhas": 0,
+                "arquivos": [],
+                "processo_atual": "",
+                "mensagem": "Nenhum número de processo encontrado nos dados",
+                "pasta_download": download_folder
+            }
+            return
+        
+        client = self.session_service.client
+        
+        # Configurar diretório de download temporariamente
+        original_download_dir = None
+        download_service = getattr(client, '_download_service', None)
+        
+        if download_service:
+            original_download_dir = download_service.download_dir
+            download_service.download_dir = Path(download_folder)
+        
+        try:
+            # Usar processar_numeros_generator (método que funciona!)
+            if hasattr(client, 'processar_numeros_generator'):
                 for state in client.processar_numeros_generator(
                     numeros_processos=numeros_processos,
                     tipo_documento="Selecione",
@@ -453,116 +469,36 @@ class ProcessingSubjectPage(BaseProcessingPage):
                     # Verificar cancelamento
                     if self._state.is_cancellation_requested:
                         state['status'] = 'Cancelado'
+                        state['pasta_download'] = download_folder
                         yield state
                         return
                     
+                    # Adicionar info da pasta
+                    state['pasta_download'] = download_folder
                     yield state
-                return
-            except Exception as e:
-                print(f"Erro usando processar_numeros_generator: {e}")
-                # Continuar com processamento individual
-        
-        # Fallback: processar individualmente
-        for idx, numero in enumerate(numeros_processos):
-            # Verificar cancelamento
-            if self._state.is_cancellation_requested:
+            else:
                 yield {
-                    "status": "Cancelado",
-                    "progresso": idx,
+                    "status": "Erro",
+                    "progresso": 0,
                     "processos": total,
-                    "sucesso": sucesso,
-                    "falhas": falhas,
-                    "arquivos": arquivos,
-                    "processo_atual": ""
+                    "sucesso": 0,
+                    "falhas": 0,
+                    "arquivos": [],
+                    "processo_atual": "",
+                    "mensagem": "Método processar_numeros_generator não disponível",
+                    "pasta_download": download_folder
                 }
-                return
-            
-            yield {
-                "status": "Processando",
-                "progresso": idx,
-                "processos": total,
-                "sucesso": sucesso,
-                "falhas": falhas,
-                "arquivos": arquivos,
-                "processo_atual": numero
-            }
-            
-            try:
-                resultado = None
-                
-                # Tentar diferentes métodos de download
-                # Método 1: solicitar_download com argumento nomeado
-                if hasattr(client, 'solicitar_download'):
-                    try:
-                        resultado = client.solicitar_download(numero_processo=numero)
-                    except TypeError:
-                        # Tentar com outro nome de parâmetro
-                        try:
-                            resultado = client.solicitar_download(processo=numero)
-                        except TypeError:
-                            pass
-                
-                # Método 2: download_service
-                if not resultado and hasattr(client, '_download_service'):
-                    ds = client._download_service
-                    if hasattr(ds, 'solicitar_download'):
-                        try:
-                            resultado = ds.solicitar_download(numero_processo=numero)
-                        except TypeError:
-                            try:
-                                resultado = ds.solicitar_download(numero)
-                            except:
-                                pass
-                
-                # Método 3: baixar_processo
-                if not resultado and hasattr(client, 'baixar_processo'):
-                    try:
-                        resultado = client.baixar_processo(numero_processo=numero)
-                    except TypeError:
-                        try:
-                            resultado = client.baixar_processo(numero)
-                        except:
-                            pass
-                
-                if resultado:
-                    sucesso += 1
-                    if isinstance(resultado, str):
-                        arquivos.append(resultado)
-                    elif isinstance(resultado, dict):
-                        if 'arquivo' in resultado:
-                            arquivos.append(resultado['arquivo'])
-                        elif 'path' in resultado:
-                            arquivos.append(resultado['path'])
-                else:
-                    falhas += 1
-                    
-            except Exception as e:
-                falhas += 1
-                print(f"Erro ao processar {numero}: {str(e)}")
-            
-            # Pequeno delay entre processos
-            time.sleep(0.3)
         
-        # Status final
-        status_final = "Concluído" if falhas == 0 else "Concluído com falhas"
-        
-        yield {
-            "status": status_final,
-            "progresso": total,
-            "processos": total,
-            "sucesso": sucesso,
-            "falhas": falhas,
-            "arquivos": arquivos,
-            "processo_atual": ""
-        }
+        finally:
+            # Restaurar diretório original
+            if download_service and original_download_dir is not None:
+                download_service.download_dir = original_download_dir
     
     def _render_header(self) -> None:
-        """Renderiza cabeçalho com nome do assunto."""
         subject = self._state.get("selected_subject")
         subject_name = self._get_subject_name(subject)
         quantidade = self._get_subject_quantidade(subject)
         
-        # Truncar nome se muito longo
         if len(subject_name) > 50:
             subject_name_display = subject_name[:50] + "..."
         else:
@@ -576,7 +512,6 @@ class ProcessingSubjectPage(BaseProcessingPage):
         st.markdown("---")
     
     def _render_content(self) -> None:
-        """Renderiza conteúdo da página."""
         if not self._validate_params():
             st.error("Nenhum assunto selecionado")
             self._navigation.go_to_download_by_subject()
