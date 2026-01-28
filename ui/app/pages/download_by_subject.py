@@ -1,8 +1,12 @@
 import streamlit as st
 from typing import List, Optional, Dict, Any, Union
+import logging
 
 from .base import BasePage
 from ..config import PAGE_CONFIG, STATUS_CONFIG, APP_CONFIG
+
+# Configurar logger para esta página
+logger = logging.getLogger("pje.download_by_subject")
 
 
 class DownloadBySubjectPage(BasePage):
@@ -12,6 +16,12 @@ class DownloadBySubjectPage(BasePage):
     1. Selecionar tarefas a ignorar
     2. Analisar assuntos dos processos (armazena dados completos para download direto)
     3. Selecionar assunto e baixar
+    
+    CORREÇÕES IMPLEMENTADAS:
+    - Cache de tarefas na Etapa 1 (evita requisições desnecessárias)
+    - Lógica de duplicatas usando idProcesso ao invés de numeroProcesso
+    - Logging detalhado para debug
+    - Dados completos armazenados para download direto
     """
     
     PAGE_TITLE = "Download por Assunto"
@@ -23,13 +33,14 @@ class DownloadBySubjectPage(BasePage):
         Extrai todos os dados relevantes do processo para cache.
         Isso evita ter que buscar novamente no momento do download.
         
+        IMPORTANTE: Armazena idProcesso que será usado para download direto.
+        
         Campos importantes para download direto:
-        - idProcesso: ID interno do processo
+        - idProcesso: ID interno do processo (ESSENCIAL para download)
         - numeroProcesso: Número CNJ
         - idTaskInstance: ID da instância da tarefa
         - nomeTarefa: Nome da tarefa onde está
         - assuntoPrincipal: Assunto principal
-        - ca (chave de acesso): Se disponível
         """
         data = {
             'numeroProcesso': None,
@@ -63,8 +74,7 @@ class DownloadBySubjectPage(BasePage):
             data['prioridade'] = processo.get('prioridade', False)
             return data
         
-        # Se é objeto
-        # Mapear campos com diferentes nomes possíveis
+        # Se é objeto (ProcessoTarefa ou similar)
         field_mappings = {
             'numeroProcesso': ['numeroProcesso', 'numero_processo', 'numero'],
             'idProcesso': ['idProcesso', 'id_processo', 'id'],
@@ -118,6 +128,16 @@ class DownloadBySubjectPage(BasePage):
         if numero:
             return str(numero)
         return ""
+    
+    def _get_id_from_processo_data(self, processo_data: Dict) -> Optional[int]:
+        """Obtém idProcesso a partir dos dados extraídos."""
+        id_proc = processo_data.get('idProcesso')
+        if id_proc:
+            try:
+                return int(id_proc)
+            except (ValueError, TypeError):
+                return None
+        return None
     
     def _get_assunto_nome(self, assunto) -> str:
         """Obtém nome do assunto de forma segura."""
@@ -187,29 +207,67 @@ class DownloadBySubjectPage(BasePage):
         self._state.set("assuntos_analisados", [])
         self._state.set("tarefas_para_analise", [])
         self._state.set("selected_subject", None)
+        # NÃO limpar cache de tarefas aqui para evitar requisições desnecessárias
     
-    def _load_tasks(self) -> List:
-        """Carrega lista de tarefas disponíveis."""
+    def _load_tasks(self, force_refresh: bool = False) -> List:
+        """
+        Carrega lista de tarefas disponíveis.
+        
+        CORREÇÃO: Usa cache do session_state para evitar requisições desnecessárias.
+        Só faz nova requisição se force_refresh=True ou cache vazio.
+        """
+        cache_key = "subject_tasks_cache"
+        
+        # Verificar cache primeiro
+        if not force_refresh:
+            cached_tasks = self._state.get(cache_key, [])
+            if cached_tasks:
+                logger.debug(f"[LOAD_TASKS] Usando cache: {len(cached_tasks)} tarefas")
+                return cached_tasks
+        
+        # Fazer requisição apenas se necessário
+        logger.info("[LOAD_TASKS] Carregando tarefas da API...")
+        
         try:
             client = self.session_service.client
             if hasattr(client, 'listar_tarefas_para_analise'):
                 tasks = client.listar_tarefas_para_analise(force=True)
             else:
                 tasks = client.listar_tarefas(force=True)
-            return tasks if tasks else []
+            
+            tasks = tasks if tasks else []
+            
+            # Salvar no cache
+            self._state.set(cache_key, tasks)
+            logger.info(f"[LOAD_TASKS] Carregadas {len(tasks)} tarefas da API")
+            
+            return tasks
         except Exception as e:
+            logger.error(f"[LOAD_TASKS] Erro ao carregar tarefas: {str(e)}")
             st.error(f"Erro ao carregar tarefas: {str(e)}")
             return []
     
     def _render_step1_select_tasks(self) -> None:
-        """Etapa 1: Selecionar tarefas a ignorar."""
+        """
+        Etapa 1: Selecionar tarefas a ignorar.
+        
+        CORREÇÃO: Cache de tarefas para evitar requisições a cada checkbox.
+        """
         st.header("Etapa 1: Selecionar Tarefas")
         st.markdown(
             "Selecione as tarefas que deseja **ignorar** na análise de assuntos. "
             "Tarefas favoritas são automaticamente ignoradas."
         )
         
-        tasks = self._load_tasks()
+        # Botão para forçar atualização
+        col_refresh, col_spacer = st.columns([1, 3])
+        with col_refresh:
+            if st.button("🔄 Atualizar lista", key="refresh_tasks_btn"):
+                self._state.set("subject_tasks_cache", [])
+                st.rerun()
+        
+        # Carregar tarefas do cache ou API
+        tasks = self._load_tasks(force_refresh=False)
         
         if not tasks:
             st.warning("Nenhuma tarefa encontrada.")
@@ -232,6 +290,7 @@ class DownloadBySubjectPage(BasePage):
         else:
             tasks_filtered = tasks
         
+        # Usar cache para tarefas ignoradas
         tarefas_ignoradas = self._state.get("tarefas_ignoradas", [])
         
         st.markdown(f"**Total de tarefas:** {len(tasks_filtered)}")
@@ -256,50 +315,57 @@ class DownloadBySubjectPage(BasePage):
         
         st.markdown("---")
         
-        new_ignoradas = []
-        
-        for idx, task in enumerate(tasks_filtered):
-            is_favorita = task.nome in nomes_favoritas
-            is_ignored = task.nome in tarefas_ignoradas
+        # Usar form para evitar reruns a cada checkbox
+        with st.form(key="tasks_selection_form"):
+            new_ignoradas = []
             
-            col1, col2 = st.columns([0.1, 0.9])
+            for idx, task in enumerate(tasks_filtered):
+                is_favorita = task.nome in nomes_favoritas
+                is_ignored = task.nome in tarefas_ignoradas
+                
+                col1, col2 = st.columns([0.1, 0.9])
+                
+                with col1:
+                    if is_favorita:
+                        st.checkbox(
+                            "Ignorar",
+                            value=True,
+                            disabled=True,
+                            key=f"task_form_{idx}",
+                            label_visibility="collapsed"
+                        )
+                    else:
+                        checked = st.checkbox(
+                            "Ignorar",
+                            value=is_ignored,
+                            key=f"task_form_{idx}",
+                            label_visibility="collapsed"
+                        )
+                        if checked:
+                            new_ignoradas.append(task.nome)
+                
+                with col2:
+                    label = f"**{task.nome}**"
+                    if is_favorita:
+                        label += " ⭐ (favorita)"
+                    if hasattr(task, 'quantidade_pendente') and task.quantidade_pendente:
+                        label += f" ({task.quantidade_pendente} processos)"
+                    st.markdown(label)
             
-            with col1:
-                if is_favorita:
-                    st.checkbox(
-                        "Ignorar tarefa",
-                        value=True,
-                        disabled=True,
-                        key=f"task_ignore_{idx}_{hash(task.nome)}",
-                        label_visibility="collapsed"
-                    )
-                else:
-                    checked = st.checkbox(
-                        "Ignorar tarefa",
-                        value=is_ignored,
-                        key=f"task_ignore_{idx}_{hash(task.nome)}",
-                        label_visibility="collapsed"
-                    )
-                    if checked:
-                        new_ignoradas.append(task.nome)
+            # Botão de submissão do form
+            submitted = st.form_submit_button("Confirmar seleção", use_container_width=True)
             
-            with col2:
-                label = f"**{task.nome}**"
-                if is_favorita:
-                    label += " ⭐ (favorita)"
-                if hasattr(task, 'quantidade') and task.quantidade:
-                    label += f" ({task.quantidade} processos)"
-                st.markdown(label)
-        
-        self._state.set("tarefas_ignoradas", new_ignoradas)
+            if submitted:
+                self._state.set("tarefas_ignoradas", new_ignoradas)
+                st.rerun()
         
         st.markdown("---")
         
-        total_ignoradas = len(new_ignoradas) + len(nomes_favoritas)
+        total_ignoradas = len(tarefas_ignoradas) + len(nomes_favoritas)
         total_para_analisar = len(tasks) - total_ignoradas
         
         st.markdown(f"**Resumo:**")
-        st.markdown(f"- Tarefas a ignorar: {len(new_ignoradas)}")
+        st.markdown(f"- Tarefas a ignorar: {len(tarefas_ignoradas)}")
         st.markdown(f"- Tarefas favoritas (ignoradas): {len(nomes_favoritas)}")
         st.markdown(f"- **Tarefas a analisar: {total_para_analisar}**")
         
@@ -310,7 +376,7 @@ class DownloadBySubjectPage(BasePage):
                 use_container_width=True,
                 key="btn_next_step1"
             ):
-                todas_ignoradas = list(set(new_ignoradas + nomes_favoritas))
+                todas_ignoradas = list(set(tarefas_ignoradas + nomes_favoritas))
                 self._state.set("tarefas_ignoradas", todas_ignoradas)
                 self._state.set("subject_step", 2)
                 st.rerun()
@@ -392,7 +458,7 @@ class DownloadBySubjectPage(BasePage):
             
             status_text.text("Iniciando análise de assuntos...")
             
-            # Sempre usar análise manual para armazenar dados completos
+            # Usar análise manual para armazenar dados completos
             assuntos = self._analyze_and_cache_data(update_progress, stats_container)
             
             progress_bar.progress(1.0)
@@ -410,6 +476,7 @@ class DownloadBySubjectPage(BasePage):
                 st.warning("Nenhum assunto encontrado nos processos analisados.")
             
         except Exception as e:
+            logger.error(f"[ANALYSIS] Erro durante análise: {str(e)}")
             st.error(f"Erro durante análise: {str(e)}")
             import traceback
             st.code(traceback.format_exc())
@@ -420,6 +487,11 @@ class DownloadBySubjectPage(BasePage):
         """
         Análise que armazena dados completos dos processos.
         Isso permite download direto sem buscar novamente.
+        
+        CORREÇÕES:
+        - Usa idProcesso para detectar duplicatas (não numeroProcesso)
+        - Logging detalhado para debug
+        - Mantém todos os processos mesmo com número duplicado se tiverem IDs diferentes
         """
         client = self.session_service.client
         tarefas_ignoradas = self._state.get("tarefas_ignoradas", [])
@@ -433,16 +505,23 @@ class DownloadBySubjectPage(BasePage):
             if t.nome not in tarefas_ignoradas
         ]
         
+        logger.info(f"[ANALYSIS] Total de tarefas: {len(todas_tarefas)}")
+        logger.info(f"[ANALYSIS] Tarefas ignoradas: {len(tarefas_ignoradas)}")
+        logger.info(f"[ANALYSIS] Tarefas a analisar: {len(tarefas_para_analisar)}")
+        
         # Dicionário para agrupar por assunto
         assuntos_dict: Dict[str, Dict] = {}
         
-        # Estatísticas
+        # Estatísticas detalhadas
         stats = {
             'total_tarefas': len(tarefas_para_analisar),
             'tarefas_processadas': 0,
-            'total_processos': 0,
+            'total_processos_encontrados': 0,
             'processos_com_id': 0,
             'processos_sem_id': 0,
+            'processos_adicionados': 0,
+            'processos_duplicados_por_id': 0,
+            'processos_duplicados_por_numero': 0,
         }
         
         total_tarefas = len(tarefas_para_analisar)
@@ -451,12 +530,16 @@ class DownloadBySubjectPage(BasePage):
             callback(idx + 1, total_tarefas, f"Analisando tarefa: {tarefa.nome}")
             stats['tarefas_processadas'] = idx + 1
             
+            logger.info(f"[ANALYSIS] [{idx+1}/{total_tarefas}] Tarefa: {tarefa.nome}")
+            
             try:
-                # Listar processos da tarefa - retorna dados brutos com todas as informações
+                # Listar processos da tarefa
                 processos = client.listar_processos_tarefa(tarefa.nome)
                 
+                logger.info(f"[ANALYSIS]   Processos retornados: {len(processos)}")
+                
                 for processo in processos:
-                    stats['total_processos'] += 1
+                    stats['total_processos_encontrados'] += 1
                     
                     # Extrair TODOS os dados relevantes do processo
                     processo_data = self._extract_processo_data(processo)
@@ -465,51 +548,85 @@ class DownloadBySubjectPage(BasePage):
                     if not processo_data.get('nomeTarefa'):
                         processo_data['nomeTarefa'] = tarefa.nome
                     
+                    # Obter identificadores
+                    id_processo = self._get_id_from_processo_data(processo_data)
+                    numero = self._get_numero_from_processo_data(processo_data)
+                    assunto_nome = self._get_assunto_from_processo_data(processo_data)
+                    
                     # Verificar se tem ID (importante para download direto)
-                    if processo_data.get('idProcesso'):
+                    if id_processo:
                         stats['processos_com_id'] += 1
                     else:
                         stats['processos_sem_id'] += 1
+                        logger.warning(f"[ANALYSIS]   Processo sem ID: {numero}")
                     
-                    # Obter assunto principal
-                    assunto_nome = self._get_assunto_from_processo_data(processo_data)
-                    
-                    # Obter número do processo (para verificar duplicatas)
-                    numero = self._get_numero_from_processo_data(processo_data)
-                    
-                    # Adicionar ao dicionário
+                    # Criar entrada para o assunto se não existir
                     if assunto_nome not in assuntos_dict:
                         assuntos_dict[assunto_nome] = {
                             'nome': assunto_nome,
                             'processos': [],
-                            'numeros': set(),  # Para evitar duplicatas
+                            'ids_vistos': set(),      # Para detectar duplicatas por ID
+                            'numeros_vistos': set(),  # Para log de números duplicados
                             'quantidade': 0
                         }
                     
-                    # Verificar duplicatas pelo número
-                    if numero and numero not in assuntos_dict[assunto_nome]['numeros']:
-                        assuntos_dict[assunto_nome]['processos'].append(processo_data)
-                        assuntos_dict[assunto_nome]['numeros'].add(numero)
-                        assuntos_dict[assunto_nome]['quantidade'] += 1
+                    assunto_entry = assuntos_dict[assunto_nome]
+                    
+                    # CORREÇÃO: Usar idProcesso para detectar duplicatas (é mais confiável)
+                    if id_processo:
+                        if id_processo in assunto_entry['ids_vistos']:
+                            stats['processos_duplicados_por_id'] += 1
+                            logger.debug(f"[ANALYSIS]   Duplicata por ID: {id_processo} ({numero})")
+                            continue
+                        assunto_entry['ids_vistos'].add(id_processo)
+                    else:
+                        # Fallback: usar número se não tiver ID
+                        if numero and numero in assunto_entry['numeros_vistos']:
+                            stats['processos_duplicados_por_numero'] += 1
+                            logger.debug(f"[ANALYSIS]   Duplicata por número: {numero}")
+                            continue
+                    
+                    # Registrar número visto (para log)
+                    if numero:
+                        assunto_entry['numeros_vistos'].add(numero)
+                    
+                    # Adicionar processo
+                    assunto_entry['processos'].append(processo_data)
+                    assunto_entry['quantidade'] += 1
+                    stats['processos_adicionados'] += 1
                     
             except Exception as e:
+                logger.error(f"[ANALYSIS]   Erro ao analisar tarefa {tarefa.nome}: {str(e)}")
                 st.warning(f"Erro ao analisar tarefa {tarefa.nome}: {str(e)}")
                 continue
             
             # Atualizar estatísticas na UI
             if stats_container:
                 with stats_container.container():
-                    col1, col2, col3 = st.columns(3)
+                    col1, col2, col3, col4 = st.columns(4)
                     with col1:
-                        st.metric("Processos", stats['total_processos'])
+                        st.metric("Encontrados", stats['total_processos_encontrados'])
                     with col2:
-                        st.metric("Com ID", stats['processos_com_id'])
+                        st.metric("Adicionados", stats['processos_adicionados'])
                     with col3:
+                        st.metric("Com ID", stats['processos_com_id'])
+                    with col4:
                         st.metric("Assuntos", len(assuntos_dict))
         
-        # Remover set de numeros antes de retornar (não é serializável)
+        # Log final de estatísticas
+        logger.info(f"[ANALYSIS] ===== ESTATÍSTICAS FINAIS =====")
+        logger.info(f"[ANALYSIS] Total processos encontrados: {stats['total_processos_encontrados']}")
+        logger.info(f"[ANALYSIS] Processos adicionados: {stats['processos_adicionados']}")
+        logger.info(f"[ANALYSIS] Processos com ID: {stats['processos_com_id']}")
+        logger.info(f"[ANALYSIS] Processos sem ID: {stats['processos_sem_id']}")
+        logger.info(f"[ANALYSIS] Duplicatas por ID: {stats['processos_duplicados_por_id']}")
+        logger.info(f"[ANALYSIS] Duplicatas por número: {stats['processos_duplicados_por_numero']}")
+        logger.info(f"[ANALYSIS] Total assuntos: {len(assuntos_dict)}")
+        
+        # Remover sets antes de retornar (não são serializáveis)
         for assunto in assuntos_dict.values():
-            del assunto['numeros']
+            del assunto['ids_vistos']
+            del assunto['numeros_vistos']
         
         # Converter para lista e ordenar por quantidade
         assuntos_list = list(assuntos_dict.values())
@@ -523,25 +640,33 @@ class DownloadBySubjectPage(BasePage):
         
         # Contar processos com ID (prontos para download direto)
         processos_com_id = 0
+        processos_sem_id = 0
         for assunto in assuntos:
             for proc in self._get_assunto_processos(assunto):
                 if proc.get('idProcesso'):
                     processos_com_id += 1
+                else:
+                    processos_sem_id += 1
         
         st.success(f"✅ Análise concluída!")
         
-        col1, col2, col3 = st.columns(3)
+        col1, col2, col3, col4 = st.columns(4)
         with col1:
             st.metric("Total de Assuntos", len(assuntos))
         with col2:
             st.metric("Total de Processos", total_processos)
         with col3:
-            st.metric("Prontos p/ Download", processos_com_id)
+            st.metric("Com ID (direto)", processos_com_id)
+        with col4:
+            st.metric("Sem ID (busca)", processos_sem_id)
         
         if processos_com_id == total_processos:
             st.info("💡 Todos os processos têm ID - download será direto (sem busca adicional)")
         elif processos_com_id > 0:
             st.info(f"💡 {processos_com_id}/{total_processos} processos com download direto")
+        
+        if processos_sem_id > 0:
+            st.warning(f"⚠️ {processos_sem_id} processos precisarão de busca (mais lento)")
         
         st.markdown("---")
         
@@ -653,6 +778,14 @@ class DownloadBySubjectPage(BasePage):
                 'quantidade': self._get_assunto_quantidade(assunto),
                 'processos': self._get_assunto_processos(assunto),
             }
+        
+        logger.info(f"[SELECT] Assunto selecionado: {assunto.get('nome')}")
+        logger.info(f"[SELECT] Quantidade de processos: {assunto.get('quantidade')}")
+        
+        # Contar processos com ID
+        processos = assunto.get('processos', [])
+        com_id = sum(1 for p in processos if p.get('idProcesso'))
+        logger.info(f"[SELECT] Processos com ID (download direto): {com_id}")
         
         st.session_state["selected_subject"] = assunto
         st.session_state["subject_limit"] = 0

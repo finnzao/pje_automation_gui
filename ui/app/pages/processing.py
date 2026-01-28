@@ -2,6 +2,7 @@ import streamlit as st
 import time
 import os
 import re
+import logging
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, Generator, Optional, List
@@ -17,6 +18,9 @@ from ..components.progress import (
 )
 from ..components.buttons import CancelButton, ConfirmationDialog
 from ..components.metrics import MetricsRow
+
+# Configurar logger
+logger = logging.getLogger("pje.processing")
 
 
 class BaseProcessingPage(ProcessingPageBase):
@@ -303,7 +307,13 @@ class ProcessingNumberPage(BaseProcessingPage):
 class ProcessingSubjectPage(BaseProcessingPage):
     """
     Página de processamento de download por assunto principal.
-    Usa processar_numeros_generator (método que funciona) com pasta personalizada.
+    
+    CORREÇÃO PRINCIPAL: Usa idProcesso do cache para download direto,
+    sem precisar buscar novamente via processar_numeros_generator.
+    
+    Fluxo corrigido:
+    1. Para processos COM idProcesso: download_service.solicitar_download() DIRETO
+    2. Para processos SEM idProcesso: fallback para busca por número
     """
     
     PAGE_TITLE = "Processando Assunto"
@@ -373,126 +383,340 @@ class ProcessingSubjectPage(BaseProcessingPage):
                     return str(value)
         return str(processo)
     
+    def _get_id_processo(self, processo) -> Optional[int]:
+        """Obtém idProcesso dos dados em cache."""
+        if isinstance(processo, dict):
+            id_val = processo.get('idProcesso') or processo.get('id_processo')
+            if id_val:
+                try:
+                    return int(id_val)
+                except (ValueError, TypeError):
+                    return None
+        
+        for field in ['idProcesso', 'id_processo', 'id']:
+            if hasattr(processo, field):
+                value = getattr(processo, field, None)
+                if value:
+                    try:
+                        return int(value)
+                    except (ValueError, TypeError):
+                        continue
+        return None
+    
     def _validate_params(self) -> bool:
         subject = self._state.get("selected_subject")
         return subject is not None
     
     def _get_generator(self):
-        """Retorna generator usando processar_numeros_generator (que funciona)."""
+        """Retorna generator usando download DIRETO com idProcesso do cache."""
         subject = self._state.get("selected_subject")
         limit = self._state.get("subject_limit", 0)
         batch_size = self._state.get("subject_tamanho_lote", 10)
         
-        return self._process_subject(subject, limit, batch_size)
+        return self._process_subject_direct(subject, limit, batch_size)
     
-    def _process_subject(self, subject, limit, batch_size):
+    def _process_subject_direct(self, subject, limit, batch_size):
         """
-        Processa downloads usando processar_numeros_generator.
-        Extrai números dos dados em cache e usa o método que já funciona.
+        Processa downloads usando idProcesso do cache para download DIRETO.
+        
+        CORREÇÃO PRINCIPAL:
+        - Para processos COM idProcesso: chama download_service.solicitar_download() DIRETO
+        - Para processos SEM idProcesso: fallback para busca por número
+        
+        Isso evita as 16 tentativas de busca em endpoints diferentes!
         """
         processos = self._get_subject_processos(subject)
         subject_name = self._get_subject_name(subject)
         
+        logger.info(f"[SUBJECT_DIRECT] ===== INICIANDO DOWNLOAD =====")
+        logger.info(f"[SUBJECT_DIRECT] Assunto: {subject_name}")
+        logger.info(f"[SUBJECT_DIRECT] Total de processos no cache: {len(processos)}")
+        
         if not processos:
+            logger.error(f"[SUBJECT_DIRECT] Nenhum processo encontrado para: {subject_name}")
             yield {
-                "status": "Erro",
+                "status": "erro",
                 "progresso": 0,
                 "processos": 0,
                 "sucesso": 0,
-                "falhas": 0,
+                "falha": 0,
                 "arquivos": [],
                 "processo_atual": "",
-                "mensagem": f"Nenhum processo encontrado para o assunto: {subject_name}"
+                "erros": [f"Nenhum processo encontrado para o assunto: {subject_name}"]
             }
             return
         
         if limit and limit > 0:
             processos = processos[:limit]
+            logger.info(f"[SUBJECT_DIRECT] Limitado a {limit} processos")
         
         total = len(processos)
         
         # Criar pasta para este download
         base_dir = self._state.get("download_dir", APP_CONFIG.DOWNLOAD_DIR)
         download_folder = self._create_subject_folder(subject_name, base_dir)
+        download_path = Path(download_folder)
         
-        yield {
-            "status": "Iniciando",
+        logger.info(f"[SUBJECT_DIRECT] Pasta de download: {download_folder}")
+        
+        # Separar processos com e sem ID
+        processos_com_id = []
+        processos_sem_id = []
+        
+        for proc in processos:
+            id_processo = self._get_id_processo(proc)
+            numero = self._get_numero_processo(proc)
+            
+            if id_processo:
+                processos_com_id.append({
+                    'idProcesso': id_processo,
+                    'numeroProcesso': numero,
+                    'dados': proc
+                })
+            else:
+                processos_sem_id.append({
+                    'numeroProcesso': numero,
+                    'dados': proc
+                })
+        
+        logger.info(f"[SUBJECT_DIRECT] Processos com ID (download direto): {len(processos_com_id)}")
+        logger.info(f"[SUBJECT_DIRECT] Processos sem ID (precisam busca): {len(processos_sem_id)}")
+        
+        # Inicializar relatório
+        relatorio = {
+            "status": "iniciando",
             "progresso": 0,
             "processos": total,
             "sucesso": 0,
-            "falhas": 0,
+            "falha": 0,
             "arquivos": [],
+            "erros": [],
             "processo_atual": "",
-            "pasta_download": download_folder
+            "pasta_download": download_folder,
+            "integridade": "pendente",
+            "retries": {
+                "tentativas": 0,
+                "processos_reprocessados": [],
+                "processos_falha_definitiva": []
+            }
         }
         
-        # Extrair números dos processos do cache
-        numeros_processos = []
-        for processo in processos:
-            numero = self._get_numero_processo(processo)
-            if numero:
-                numeros_processos.append(numero)
+        yield relatorio
         
-        if not numeros_processos:
-            yield {
-                "status": "Erro",
-                "progresso": 0,
-                "processos": 0,
-                "sucesso": 0,
-                "falhas": 0,
-                "arquivos": [],
-                "processo_atual": "",
-                "mensagem": "Nenhum número de processo encontrado nos dados",
-                "pasta_download": download_folder
-            }
-            return
-        
+        # Obter serviços
         client = self.session_service.client
+        download_service = client._downloads
         
-        # Configurar diretório de download temporariamente
-        original_download_dir = None
-        download_service = getattr(client, '_download_service', None)
+        processos_pendentes = []
         
-        if download_service:
-            original_download_dir = download_service.download_dir
-            download_service.download_dir = Path(download_folder)
+        # ========== FASE 1: Download DIRETO para processos com ID ==========
+        logger.info(f"[SUBJECT_DIRECT] ===== FASE 1: DOWNLOAD DIRETO =====")
+        relatorio["status"] = "processando"
         
-        try:
-            # Usar processar_numeros_generator (método que funciona!)
-            if hasattr(client, 'processar_numeros_generator'):
-                for state in client.processar_numeros_generator(
-                    numeros_processos=numeros_processos,
+        for i, proc_info in enumerate(processos_com_id, 1):
+            # Verificar cancelamento
+            if self._state.is_cancellation_requested:
+                logger.warning("[SUBJECT_DIRECT] Cancelamento solicitado")
+                relatorio["status"] = "cancelado"
+                relatorio["erros"].append("Processamento cancelado pelo usuário")
+                yield relatorio
+                return
+            
+            id_processo = proc_info['idProcesso']
+            numero = proc_info['numeroProcesso']
+            
+            relatorio["processo_atual"] = numero
+            relatorio["progresso"] = i
+            
+            logger.info(f"[SUBJECT_DIRECT] [{i}/{len(processos_com_id)}] Download direto: {numero} (ID={id_processo})")
+            
+            yield relatorio
+            
+            try:
+                # DOWNLOAD DIRETO usando idProcesso!
+                sucesso, detalhes = download_service.solicitar_download(
+                    id_processo=id_processo,
+                    numero_processo=numero,
                     tipo_documento="Selecione",
-                    aguardar_download=True,
-                    tempo_espera=300
+                    diretorio_download=download_path
+                )
+                
+                if sucesso:
+                    logger.info(f"[SUBJECT_DIRECT]   ✅ Solicitação OK")
+                    
+                    if detalhes.get("arquivo_baixado"):
+                        arquivo = Path(detalhes["arquivo_baixado"])
+                        if arquivo.exists() and arquivo.stat().st_size > 0:
+                            relatorio["arquivos"].append(str(arquivo))
+                            relatorio["sucesso"] += 1
+                            logger.info(f"[SUBJECT_DIRECT]   📁 Arquivo baixado: {arquivo.name}")
+                        else:
+                            processos_pendentes.append(numero)
+                            logger.info(f"[SUBJECT_DIRECT]   ⏳ Arquivo pendente (será aguardado)")
+                    else:
+                        processos_pendentes.append(numero)
+                        logger.info(f"[SUBJECT_DIRECT]   ⏳ Download pendente (área de download)")
+                else:
+                    relatorio["falha"] += 1
+                    relatorio["erros"].append(f"Falha ao solicitar download: {numero}")
+                    logger.error(f"[SUBJECT_DIRECT]   ❌ Falha ao solicitar download")
+                
+            except Exception as e:
+                relatorio["falha"] += 1
+                relatorio["erros"].append(f"Erro em {numero}: {str(e)}")
+                logger.error(f"[SUBJECT_DIRECT]   ❌ Exceção: {type(e).__name__}: {str(e)}")
+            
+            yield relatorio
+            time.sleep(2)  # Delay entre requisições
+        
+        # ========== FASE 2: Busca e download para processos SEM ID ==========
+        if processos_sem_id:
+            logger.info(f"[SUBJECT_DIRECT] ===== FASE 2: BUSCA E DOWNLOAD =====")
+            logger.info(f"[SUBJECT_DIRECT] {len(processos_sem_id)} processos precisam busca")
+            
+            relatorio["status"] = "buscando_processos"
+            
+            # Extrair números para busca
+            numeros_para_buscar = [p['numeroProcesso'] for p in processos_sem_id if p['numeroProcesso']]
+            
+            if numeros_para_buscar:
+                base_progress = len(processos_com_id)
+                
+                # Usar processar_numeros_generator como fallback
+                for state in client.processar_numeros_generator(
+                    numeros_processos=numeros_para_buscar,
+                    tipo_documento="Selecione",
+                    aguardar_download=False,  # Vamos aguardar tudo junto depois
+                    tempo_espera=60
                 ):
                     # Verificar cancelamento
                     if self._state.is_cancellation_requested:
-                        state['status'] = 'Cancelado'
-                        state['pasta_download'] = download_folder
-                        yield state
+                        logger.warning("[SUBJECT_DIRECT] Cancelamento solicitado na fase 2")
+                        relatorio["status"] = "cancelado"
+                        yield relatorio
                         return
                     
-                    # Adicionar info da pasta
-                    state['pasta_download'] = download_folder
-                    yield state
-            else:
-                yield {
-                    "status": "Erro",
-                    "progresso": 0,
-                    "processos": total,
-                    "sucesso": 0,
-                    "falhas": 0,
-                    "arquivos": [],
-                    "processo_atual": "",
-                    "mensagem": "Método processar_numeros_generator não disponível",
-                    "pasta_download": download_folder
-                }
+                    # Atualizar progresso
+                    sub_progress = state.get("progresso", 0)
+                    relatorio["progresso"] = base_progress + sub_progress
+                    relatorio["processo_atual"] = state.get("processo_atual", "")
+                    
+                    # Agregar resultados
+                    for arq in state.get("arquivos", []):
+                        if arq not in relatorio["arquivos"]:
+                            relatorio["arquivos"].append(arq)
+                    
+                    relatorio["erros"].extend(state.get("erros", []))
+                    
+                    yield relatorio
+                
+                # Atualizar contadores
+                relatorio["sucesso"] = len(relatorio["arquivos"])
         
-        finally:
-            # Restaurar diretório original
-            if download_service and original_download_dir is not None:
-                download_service.download_dir = original_download_dir
+        # ========== FASE 3: Aguardar downloads pendentes ==========
+        if processos_pendentes:
+            logger.info(f"[SUBJECT_DIRECT] ===== FASE 3: AGUARDAR DOWNLOADS =====")
+            logger.info(f"[SUBJECT_DIRECT] {len(processos_pendentes)} downloads pendentes")
+            
+            relatorio["status"] = "aguardando_downloads"
+            relatorio["processo_atual"] = f"Aguardando {len(processos_pendentes)} downloads"
+            yield relatorio
+            
+            # Aguardar e baixar
+            time.sleep(5)  # Tempo inicial para geração
+            
+            inicio = time.time()
+            tempo_espera = 300  # 5 minutos
+            processos_restantes = set(processos_pendentes)
+            
+            while processos_restantes and (time.time() - inicio) < tempo_espera:
+                if self._state.is_cancellation_requested:
+                    break
+                
+                try:
+                    downloads = download_service.listar_downloads_disponiveis()
+                    
+                    for download in downloads:
+                        if self._state.is_cancellation_requested:
+                            break
+                        
+                        numeros = download.get_numeros_processos()
+                        for num in numeros:
+                            if num in processos_restantes:
+                                arquivo = download_service.baixar_arquivo(download, download_path)
+                                if arquivo and arquivo.exists() and arquivo.stat().st_size > 0:
+                                    relatorio["arquivos"].append(str(arquivo))
+                                    relatorio["sucesso"] += 1
+                                    processos_restantes.discard(num)
+                                    logger.info(f"[SUBJECT_DIRECT] ✅ Download concluído: {num}")
+                    
+                    if processos_restantes:
+                        relatorio["processo_atual"] = f"Restantes: {len(processos_restantes)}"
+                        yield relatorio
+                        time.sleep(10)
+                    
+                except Exception as e:
+                    logger.error(f"[SUBJECT_DIRECT] Erro ao verificar downloads: {e}")
+                    time.sleep(10)
+        
+        # ========== FASE 4: Verificar integridade ==========
+        logger.info(f"[SUBJECT_DIRECT] ===== FASE 4: VERIFICAR INTEGRIDADE =====")
+        
+        relatorio["status"] = "verificando_integridade"
+        relatorio["processo_atual"] = "Verificando arquivos"
+        yield relatorio
+        
+        # Verificar quais processos foram baixados
+        arquivos_baixados = set()
+        for arq in relatorio["arquivos"]:
+            arquivo_path = Path(arq)
+            if arquivo_path.exists():
+                # Extrair número do nome do arquivo
+                match = re.match(r'^(\d{7}-\d{2}\.\d{4}\.\d\.\d{2}\.\d{4})', arquivo_path.name)
+                if match:
+                    arquivos_baixados.add(match.group(1))
+        
+        # Comparar com esperado
+        todos_numeros = set()
+        for proc in processos:
+            numero = self._get_numero_processo(proc)
+            if numero:
+                todos_numeros.add(numero)
+        
+        processos_faltantes = todos_numeros - arquivos_baixados
+        
+        if processos_faltantes:
+            relatorio["integridade"] = "inconsistente"
+            relatorio["retries"]["processos_falha_definitiva"] = list(processos_faltantes)
+            logger.warning(f"[SUBJECT_DIRECT] {len(processos_faltantes)} processos faltantes")
+        else:
+            relatorio["integridade"] = "ok"
+            logger.info(f"[SUBJECT_DIRECT] ✅ Integridade OK")
+        
+        # ========== FINALIZAÇÃO ==========
+        logger.info(f"[SUBJECT_DIRECT] ===== FINALIZAÇÃO =====")
+        
+        # Recalcular contadores finais
+        relatorio["sucesso"] = len([a for a in relatorio["arquivos"] if Path(a).exists()])
+        relatorio["falha"] = relatorio["processos"] - relatorio["sucesso"]
+        relatorio["processo_atual"] = ""
+        
+        if self._state.is_cancellation_requested:
+            relatorio["status"] = "cancelado"
+        elif relatorio["integridade"] == "ok":
+            relatorio["status"] = "concluido"
+        elif processos_faltantes:
+            relatorio["status"] = "concluido_com_falhas"
+        else:
+            relatorio["status"] = "concluido"
+        
+        logger.info(f"[SUBJECT_DIRECT] Status final: {relatorio['status']}")
+        logger.info(f"[SUBJECT_DIRECT] Sucesso: {relatorio['sucesso']}")
+        logger.info(f"[SUBJECT_DIRECT] Falha: {relatorio['falha']}")
+        logger.info(f"[SUBJECT_DIRECT] Arquivos: {len(relatorio['arquivos'])}")
+        logger.info(f"[SUBJECT_DIRECT] ===== FIM =====")
+        
+        yield relatorio
     
     def _render_header(self) -> None:
         subject = self._state.get("selected_subject")
@@ -507,7 +731,11 @@ class ProcessingSubjectPage(BaseProcessingPage):
         st.title(f"📚 Processando: {subject_name_display}")
         
         if quantidade > 0:
-            st.caption(f"Total de processos: {quantidade}")
+            # Contar processos com ID
+            processos = self._get_subject_processos(subject)
+            com_id = sum(1 for p in processos if self._get_id_processo(p))
+            
+            st.caption(f"Total de processos: {quantidade} ({com_id} com download direto)")
         
         st.markdown("---")
     
